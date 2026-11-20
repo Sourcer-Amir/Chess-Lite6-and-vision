@@ -16,6 +16,46 @@ from estado_tablero import (CEMENTERIO, observacion_desde_matriz, observacion_a_
                             tipo_jugada, casilla_a_celda)
 
 
+SIN_ID = ("*", "W*", "B*")
+
+
+class Votacion:
+    """
+    Identidad de cada pieza por votacion en vivo, casilla por casilla.
+    - La primera figura conocida manda hasta que otra la empata o la supera.
+    - Si la casilla queda vacia HUECO frames seguidos (con el marco visible), se olvida:
+      la pieza se movio o la capturaron, y la siguiente que aparezca empieza de cero.
+    - Las lecturas '*' (desconocida) solo confirman que la casilla esta ocupada.
+    """
+    HUECO = 5
+
+    def __init__(self):
+        self.reiniciar()
+
+    def reiniciar(self):
+        self.votos, self.lider, self.vacias = {}, {}, {}
+
+    def actualizar(self, obs):
+        for sq, s in obs.items():
+            self.vacias[sq] = 0
+            c = self.votos.setdefault(sq, {})
+            self.lider.setdefault(sq, None)
+            if s in SIN_ID:
+                continue
+            c[s] = c.get(s, 0) + 1
+            if self.lider[sq] is None or c[s] > c[self.lider[sq]]:
+                self.lider[sq] = s
+        for sq in list(self.votos):
+            if sq not in obs:
+                self.vacias[sq] = self.vacias.get(sq, 0) + 1
+                if self.vacias[sq] >= self.HUECO:
+                    del self.votos[sq], self.lider[sq], self.vacias[sq]
+
+    def ocupadas(self):
+        """{casilla: simbolo votado o None si nunca se identifico}."""
+        return dict(self.lider)
+
+
 class Juego:
     def __init__(self, con_robot=True, con_motor=True):
         self.cam = Camara(config.CAM_INDICE, config.CAM_MODO, config.CAM_CONF)
@@ -34,9 +74,11 @@ class Juego:
         self.i_cementerio = 0
         self.i_banco = {}
         self.ultima_vista = None
+        self.votos = Votacion()
+        self.robot_blancas = config.ROBOT_JUEGA_BLANCAS
 
     # ------------------------------------------------------------ vision
-    def _procesar(self, img, suavizar=False):
+    def _procesar(self, img, suavizar=False, votar=False):
         """
         Procesa UN frame (sirve para tiempo real y para la lectura estable).
         Devuelve (obs | None, extra, imgs). imgs: M, mask y, si hay marco, plano y vista.
@@ -58,7 +100,10 @@ class Juego:
 
         vis, matriz = analizar_formas_tablero(plano)
         vista = dibujar_tablero(vis, matriz)
-        return observacion_desde_matriz(matriz), extra, {"M": M, "mask": mask, "plano": plano, "vista": vista}
+        obs = observacion_desde_matriz(matriz)
+        if votar:
+            self.votos.actualizar(obs)
+        return obs, extra, {"M": M, "mask": mask, "plano": plano, "vista": vista}
 
     def _suavizar(self, M):
         """Promedio exponencial de las esquinas; si saltan mucho (movimiento real), se reinicia."""
@@ -87,11 +132,44 @@ class Juego:
         return {"ok": True, "piezas": observacion_a_texto(obs), **extra}
 
     # ------------------------------------------------------------ partida
-    def iniciar(self, blancas_mueven=True, enroques="auto", al_paso="-"):
-        obs, _ = self._observar()
-        self.board, avisos = tablero_desde_observacion(obs, blancas_mueven, enroques, al_paso)
+    def iniciar(self, frames_si_no_hay_votos=30):
+        """
+        Arma la partida con la identidad votada de cada pieza y el ROBOT mueve primero.
+        Se niega a jugar si alguna casilla ocupada nunca se identifico (ni una vez) o si la
+        posicion no es valida. Si no hay votos (p. ej. llamado desde MATLAB, sin analisis en vivo),
+        analiza primero 'frames_si_no_hay_votos' frames.
+        """
+        if not self.votos.ocupadas():
+            for _ in range(frames_si_no_hay_votos):
+                img = self.cam.leer()
+                if img is not None:
+                    try:
+                        self._procesar(img, suavizar=True, votar=True)
+                    except Exception:
+                        pass
+        ocupadas = self.votos.ocupadas()
+        if not ocupadas:
+            return {"ok": False, "error": "sin_piezas",
+                    "mensaje": "No veo piezas en el tablero (o no veo el marco verde)."}
+        faltan = sorted(chess.square_name(sq) for sq, s in ocupadas.items() if s is None)
+        if faltan:
+            return {"ok": False, "error": "piezas_sin_identificar", "casillas": faltan,
+                    "mensaje": "No juego: estas casillas tienen una pieza que todavia no se ha "
+                               "identificado ni una vez: " + ", ".join(faltan)}
+
+        obs = {sq: s for sq, s in ocupadas.items()}
+        board, avisos = tablero_desde_observacion(obs, blancas_mueven=self.robot_blancas)
+        if avisos:
+            avisos = self._explicar_status(board)
+            return {"ok": False, "error": "posicion_invalida", "avisos": avisos,
+                    "piezas": observacion_a_texto(obs),
+                    "mensaje": "No juego: " + ", ".join(avisos) + ". Lo que vote cada casilla: "
+                               + str(observacion_a_texto(obs))}
+        self.board = board
         self.i_cementerio, self.i_banco = 0, {}
-        return {"ok": True, "fen": self.board.fen(), "avisos": avisos}
+        r = self.jugada_robot()
+        r["inicio"] = {"fen": board.fen(), "piezas": observacion_a_texto(obs)}
+        return r
 
     def iniciar_fen(self, fen):
         """Alternativa manual: arrancar desde un FEN escrito a mano."""
@@ -105,6 +183,14 @@ class Juego:
         if m is None:
             return {"ok": False, **info}
         return self._aplicar(m)
+
+    def turno(self):
+        """Reconoce la jugada del humano y, si es legal y la partida sigue, el robot contesta."""
+        h = self.jugada_humano()
+        if not h["ok"] or h.get("terminada"):
+            return {"humano": h, **({} if not h["ok"] else self.estado())}
+        r = self.jugada_robot()
+        return {"humano": h, "robot": r, **self.estado()}
 
     def confirmar_jugada(self, uci):
         """Para cuando la vision es ambigua (p. ej. a que pieza promovio el humano)."""
@@ -139,9 +225,40 @@ class Juego:
         if self.board is None:
             return {"ok": True, "iniciada": False}
         b = self.board
-        return {"ok": True, "iniciada": True, "fen": b.fen(),
-                "turno": "blancas" if b.turn else "negras", "jaque": b.is_check(),
-                "terminada": b.is_game_over(), "resultado": b.result() if b.is_game_over() else "*"}
+        r = {"ok": True, "iniciada": True, "fen": b.fen(),
+             "turno": "blancas" if b.turn else "negras", "jaque": b.is_check(),
+             "terminada": b.is_game_over(), "resultado": b.result() if b.is_game_over() else "*"}
+        if b.is_game_over():
+            r["mensaje_fin"] = self._mensaje_fin()
+        return r
+
+    @staticmethod
+    def _explicar_status(board):
+        """Traduce los codigos de chess.Board.status() a texto."""
+        st = board.status()
+        textos = [(chess.STATUS_NO_WHITE_KING, "falta el rey blanco"),
+                  (chess.STATUS_NO_BLACK_KING, "falta el rey negro"),
+                  (chess.STATUS_TOO_MANY_KINGS, "hay mas de un rey del mismo color"),
+                  (chess.STATUS_TOO_MANY_WHITE_PIECES, "demasiadas piezas blancas"),
+                  (chess.STATUS_TOO_MANY_BLACK_PIECES, "demasiadas piezas negras"),
+                  (chess.STATUS_PAWNS_ON_BACKRANK, "hay peones en la primera u octava fila"),
+                  (chess.STATUS_OPPOSITE_CHECK, "el rey del bando que no mueve esta en jaque"),
+                  (chess.STATUS_TOO_MANY_CHECKERS, "jaque imposible"),
+                  (chess.STATUS_IMPOSSIBLE_CHECK, "jaque imposible")]
+        salida = [t for f, t in textos if st & f]
+        return salida or [f"codigo {int(st)}"]
+
+    def _mensaje_fin(self):
+        b = self.board
+        if b.is_checkmate():
+            gana_robot = (not b.turn) == self.robot_blancas   # gana quien acaba de mover
+            return "Jaque mate. Perdiste, gano el robot." if gana_robot else "Jaque mate. Felicidades, ganaste!"
+        motivos = {chess.Termination.STALEMATE: "ahogado",
+                   chess.Termination.INSUFFICIENT_MATERIAL: "material insuficiente",
+                   chess.Termination.SEVENTYFIVE_MOVES: "regla de 75 jugadas",
+                   chess.Termination.FIVEFOLD_REPETITION: "quintuple repeticion"}
+        t = b.outcome()
+        return f"Tablas por {motivos.get(t.termination, str(t.termination))}."
 
     def home(self):
         if self.robot:

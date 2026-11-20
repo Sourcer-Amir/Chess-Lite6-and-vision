@@ -20,7 +20,7 @@ from vision import contar_esquinas
 
 CAMPOS_FRAME = ["frame", "t", "marco_ok", "n_piezas", "altura_mm", "nadir_x", "nadir_y", "error"]
 CAMPOS_PIEZA = ["frame", "t", "casilla", "fila", "col", "simbolo", "cx", "cy", "dist_nadir_mm",
-                "area", "vertices", "agudas", "circ"]
+                "area", "vertices", "agudas", "circ", "relleno"]
 
 
 def blobs_naranja(plano, area_min=200):
@@ -37,8 +37,10 @@ def blobs_naranja(plano, area_min=200):
         M = cv2.moments(c)
         P = np.squeeze(c)
         n, agudas = contar_esquinas(P) if P.ndim == 2 and len(P) >= 3 else (0, 0)
+        w, h = cv2.minAreaRect(c)[1]
         salida.append({"cx": M["m10"] / M["m00"], "cy": M["m01"] / M["m00"], "area": a,
-                       "vertices": n, "agudas": agudas, "circ": 4 * np.pi * a / p ** 2})
+                       "vertices": n, "agudas": agudas, "circ": 4 * np.pi * a / p ** 2,
+                       "relleno": a / (w * h) if w * h else 0})
     return salida
 
 
@@ -77,7 +79,7 @@ class Registro:
                 "simbolo": obs.get(sq, "vacio"), "cx": round(b["cx"], 1), "cy": round(b["cy"], 1),
                 "dist_nadir_mm": round(dist, 1) if dist != "" else "",
                 "area": int(b["area"]), "vertices": b["vertices"], "agudas": b["agudas"],
-                "circ": round(b["circ"], 3)})
+                "circ": round(b["circ"], 3), "relleno": round(b["relleno"], 3)})
 
         self.wf.writerow({
             "frame": self.n, "t": t, "marco_ok": int(marco_ok), "n_piezas": len(piezas),

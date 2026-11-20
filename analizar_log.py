@@ -190,8 +190,12 @@ def reporte(sesion, carpeta="logs"):
             continue
         ag = Counter(int(d["agudas"]) for p in pres if p["identidad"] == ident for d in p["dets"])
         cs = [float(d["circ"]) for p in pres if p["identidad"] == ident for d in p["dets"]]
+        rl = sorted(float(d["relleno"]) for p in pres if p["identidad"] == ident for d in p["dets"]
+                    if d.get("relleno"))
+        txt_r = (f" | relleno mediana {rl[len(rl)//2]:.2f} (5%: {rl[len(rl)//20]:.2f}, 95%: {rl[len(rl)*19//20]:.2f})"
+                 if rl else "")
         w(f"  {ident}: agudas {dict(sorted(ag.items()))} | circ media {sum(cs)/len(cs):.2f} "
-          f"(min {min(cs):.2f}, max {max(cs):.2f})")
+          f"(min {min(cs):.2f}, max {max(cs):.2f}){txt_r}")
 
     texto = "\n".join(L)
     print(texto)

@@ -11,7 +11,7 @@ def obtener_homografia_por_color(img_bgr, lado=800):
     Calcula la matriz de homografia para rectificar la perspectiva del tablero.
     """
     hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
-    lower_green = np.array([35, 40, 30])
+    lower_green = np.array([35, 50, 50])
     upper_green = np.array([85, 255, 255])
     mask = cv2.inRange(hsv, lower_green, upper_green)
 
@@ -137,7 +137,7 @@ def douglas_peucker(P, tol):
 
 def contar_esquinas(P):
     """
-    Cuenta vertices totales y esquinas agudas (menor a 120 grados) en un contorno cerrado.
+    Cuenta vertices totales y esquinas agudas (< 120 grados) en un contorno cerrado.
     """
     diff_pts = np.diff(np.vstack((P, P[0])), axis=0)
     perim = np.sum(np.linalg.norm(diff_pts, axis=1))
@@ -182,15 +182,16 @@ def contar_esquinas(P):
 
 def analizar_formas_tablero(plano_rectificado):
     """
-    Segmenta figuras por saturacion, rellena huecos intrinsecos, cuenta vertices
-    y clasifica cada figura naranja en una matriz de 8x8.
+    Segmenta las figuras naranjas, rellena huecos, mide su relleno y circularidad
+    y clasifica cada una en una matriz de 8x8 (ver bloque de clasificacion).
     """
     h, w = plano_rectificado.shape[:2]
     ch, cw = h // 8, w // 8
     matriz = np.empty((8, 8), dtype=object)
 
     hsv = cv2.cvtColor(plano_rectificado, cv2.COLOR_BGR2HSV)
-
+    # Solo tonos rojo/naranja/amarillo con saturacion alta: las casillas blancas salen azuladas
+    # (superaban S>51) y el marco verde cerraba un anillo que luego se rellenaba.
     mask = cv2.bitwise_or(
         cv2.inRange(hsv, (0, 100, 60), (35, 255, 255)),
         cv2.inRange(hsv, (172, 100, 60), (180, 255, 255))
@@ -236,17 +237,22 @@ def analizar_formas_tablero(plano_rectificado):
         _, n_agudas = contar_esquinas(P)
         circ = 4.0 * np.pi * area / (perimetro ** 2)
 
-                # Clasificacion por forma vista desde arriba (ver NOMBRE_A_SIMBOLO en config.py):
-        #   cuadrado  -> 4 esquinas agudas (<120 grados)      -> Rey Blanco
-        #   pentagono -> 5 esquinas agudas                    -> Rey Negro
-        #   circulo   -> 0 esquinas y circularidad > 0.80     -> Torre Blanca
+        # Clasificacion por RELLENO = area / rectangulo minimo que contiene la figura.
+        # No depende de contar esquinas (inestable con esquinas redondeadas o paralaje).
+        # Ver NOMBRE_A_SIMBOLO en config.py:
+        #   cuadrado  -> relleno ~0.95-1.00                     -> Rey Blanco   ('K')
+        #   circulo   -> relleno ~0.78 y circularidad alta      -> Torre Blanca ('R')
+        #   pentagono -> relleno ~0.69-0.72                     -> Rey Negro    ('k')
+        # n_agudas ya no decide; se deja calculado por si se quiere comparar.
+        w_r, h_r = cv2.minAreaRect(cnt)[1]
+        relleno = area / (w_r * h_r) if w_r * h_r > 0 else 0
         pieza = 'Desconocido'
-        if n_agudas == 4:
+        if relleno >= 0.88:
             pieza = 'Rey Blanco'
-        elif n_agudas == 5:
-            pieza = 'Rey Negro'
-        elif n_agudas == 0 and circ > 0.80:
+        elif relleno >= 0.75 and circ >= 0.84:
             pieza = 'Torre Blanca'
+        elif relleno < 0.75:
+            pieza = 'Rey Negro'
 
         M = cv2.moments(cnt)
         if M["m00"] != 0:

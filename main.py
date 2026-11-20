@@ -1,10 +1,13 @@
 """
-Modo de pruebas con teclado (sin MATLAB). Uso: python3 main.py [--sin-robot] [--sin-motor]
-Una sola ventana "Monitor" con 4 paneles: 1 en vivo (recorte cuadrado con el marco y una mira),
-2 mascara verde, 3 tablero rectificado, 4 piezas detectadas.
-  ESPACIO : activar/desactivar el analisis continuo     v : lectura estable (mediana de frames)
-  i : iniciar partida desde lo que ve la camara         h : reconocer jugada humana
-  r : jugada del robot (Stockfish)                      s : estado       q : salir
+Partida con teclado (sin MATLAB). Uso: python3 main.py [--sin-robot] [--sin-motor]
+Ventana "Monitor": 1 en vivo (cuadro guia y cruz fijos), 2 mascara verde, 3 tablero rectificado,
+4 piezas detectadas. El analisis en vivo arranca solo: cada casilla va votando la identidad de su pieza.
+  i       : iniciar. Usa las piezas votadas; si alguna no se ha identificado ni una vez, no juega.
+            El robot hace la primera jugada.
+  ENTER   : tu turno. Haz tu jugada y presiona ENTER: se reconoce y el robot contesta.
+  ESPACIO : pausar / reanudar el analisis en vivo (y el registro en logs/)
+  q       : salir
+Al haber jaque mate o tablas se muestra el resultado y el programa termina.
 """
 
 import sys
@@ -62,7 +65,7 @@ def construir_monitor(frame, analisis, juego, registro=None):
     extra, imgs, error = {}, {}, None
     if analisis:
         try:
-            obs, extra, imgs = juego._procesar(frame, suavizar=True)
+            obs, extra, imgs = juego._procesar(frame, suavizar=True, votar=juego.board is None)
             if registro:
                 registro.registrar(obs, extra, imgs)
         except Exception as e:           # p. ej. solvePnP fallo en un frame ruidoso
@@ -83,35 +86,75 @@ def construir_monitor(frame, analisis, juego, registro=None):
     return np.vstack([np.hstack([p1, p2]), np.hstack([p3, p4])])
 
 
+MENSAJES = {
+    "sin_cambio": "No veo ningun cambio en el tablero. Haz tu jugada y vuelve a presionar ENTER.",
+    "no_coincide": "Lo que veo no coincide con ninguna jugada legal. Revisa las piezas y presiona ENTER.",
+    "ambigua": "Hay varias jugadas posibles con lo que veo. Acomoda bien las piezas y presiona ENTER.",
+    "promocion_ambigua": "No distingo a que pieza promoviste.",
+    "fallo_robot": "El robot no pudo completar el movimiento. Revisa el brazo.",
+    "sin_motor": "No hay motor de ajedrez (corriste con --sin-motor).",
+}
+
+
+def mostrar_jugada(quien, r):
+    if r.get("ok"):
+        jaque = "  (jaque)" if r.get("jaque") else ""
+        print(f"  {quien}: {r['uci']} [{r['tipo']}]{jaque}")
+    else:
+        print(f"  {quien}: {MENSAJES.get(r.get('error'), r.get('mensaje') or r)}")
+        if r.get("error") == "no_coincide" and r.get("mas_parecida"):
+            print(f"    (la jugada legal mas parecida seria {r['mas_parecida']})")
+
+
 def main():
     juego = Juego(con_robot="--sin-robot" not in sys.argv, con_motor="--sin-motor" not in sys.argv)
     print(__doc__)
-    acciones = {
-        ord("v"): juego.leer_tablero,
-        ord("i"): lambda: juego.iniciar(blancas_mueven=not config.ROBOT_JUEGA_BLANCAS),
-        ord("h"): juego.jugada_humano,
-        ord("r"): juego.jugada_robot,
-        ord("s"): juego.estado,
-    }
-    analisis = False
+    color = "blancas" if config.ROBOT_JUEGA_BLANCAS else "negras"
+    print(f"El robot juega con {color} y mueve primero.\n")
+    analisis = True
     registro = Registro()
     cv2.namedWindow("Monitor", cv2.WINDOW_AUTOSIZE)
+    fin = None
     try:
-        while True:
+        while fin is None:
             frame = juego.cam.leer()
             if frame is not None:
                 cv2.imshow("Monitor", construir_monitor(frame, analisis, juego, registro))
             tecla = cv2.waitKey(1) & 0xFF
             if tecla == ord("q"):
                 break
-            if tecla == 32:
-                analisis = not analisis
-                print("Analisis continuo:", "ACTIVO" if analisis else "apagado")
-            elif tecla in acciones:
-                try:
-                    print(acciones[tecla]())
-                except Exception as e:
-                    print(f"Error: {e}")
+            try:
+                if tecla == 32:
+                    analisis = not analisis
+                    print("Analisis en vivo:", "ACTIVO" if analisis else "pausado")
+                elif tecla == ord("i"):
+                    if juego.board is not None:
+                        print("La partida ya empezo. Usa ENTER despues de tu jugada.")
+                        continue
+                    if not analisis:
+                        analisis = True
+                        print("Reactive el analisis en vivo. Espera unos segundos y presiona i otra vez.")
+                        continue
+                    r = juego.iniciar()
+                    if "inicio" in r:
+                        print("Piezas:", r["inicio"]["piezas"])
+                        mostrar_jugada("Robot", r)
+                        fin = r.get("mensaje_fin")
+                    else:
+                        print(r.get("mensaje", r))
+                elif tecla in (10, 13):
+                    if juego.board is None:
+                        print("Primero inicia la partida con i.")
+                        continue
+                    r = juego.turno()
+                    mostrar_jugada("Tu", r["humano"])
+                    if "robot" in r:
+                        mostrar_jugada("Robot", r["robot"])
+                    fin = r.get("mensaje_fin")
+            except Exception as e:
+                print(f"Error: {e}")
+        if fin:
+            print("\n" + "=" * 50 + f"\n  {fin}\n" + "=" * 50)
     finally:
         registro.cerrar()
         juego.cerrar()
