@@ -5,6 +5,7 @@ Todas las funciones publicas devuelven dict con tipos simples (para JSON y MATLA
 
 import chess
 import cv2
+import numpy as np
 
 import config
 from camara import Camara
@@ -35,13 +36,16 @@ class Juego:
         self.ultima_vista = None
 
     # ------------------------------------------------------------ vision
-    def _observar(self):
-        img = self.cam.leer_estable(config.CAM_FRAMES_MEDIANA)
-        if img is None:
-            raise RuntimeError("La camara no entrego imagen")
-        M, _ = obtener_homografia_por_color(img, config.LADO)
+    def _procesar(self, img, suavizar=False):
+        """
+        Procesa UN frame (sirve para tiempo real y para la lectura estable).
+        Devuelve (obs | None, extra, imgs). imgs: M, mask y, si hay marco, plano y vista.
+        """
+        M, mask = obtener_homografia_por_color(img, config.LADO)
         if M is None:
-            raise RuntimeError("No se encontro el marco verde")
+            return None, {}, {"M": None, "mask": mask}
+        if suavizar:
+            M = self._suavizar(M)
 
         plano = cv2.warpPerspective(img, M, (config.LADO, config.LADO))
         extra = {}
@@ -53,9 +57,30 @@ class Juego:
             extra = {"altura_camara_mm": round(altura, 1), "nadir_px": [round(v) for v in nadir]}
 
         vis, matriz = analizar_formas_tablero(plano)
-        self.ultima_vista = dibujar_tablero(vis, matriz)
+        vista = dibujar_tablero(vis, matriz)
+        return observacion_desde_matriz(matriz), extra, {"M": M, "mask": mask, "plano": plano, "vista": vista}
+
+    def _suavizar(self, M):
+        """Promedio exponencial de las esquinas; si saltan mucho (movimiento real), se reinicia."""
+        esq = esquinas_desde_homografia(M, config.LADO)
+        prev = getattr(self, "_esq_prev", None)
+        if prev is not None and np.abs(esq - prev).max() < 40:
+            a = config.SUAVIZADO_EN_VIVO
+            esq = (1 - a) * prev + a * esq
+        self._esq_prev = esq
+        dst = np.float32([[0, 0], [config.LADO - 1, 0], [config.LADO - 1, config.LADO - 1], [0, config.LADO - 1]])
+        return cv2.getPerspectiveTransform(np.float32(esq), dst)
+
+    def _observar(self):
+        img = self.cam.leer_estable(config.CAM_FRAMES_MEDIANA)
+        if img is None:
+            raise RuntimeError("La camara no entrego imagen")
+        obs, extra, imgs = self._procesar(img)
+        if obs is None:
+            raise RuntimeError("No se encontro el marco verde")
+        self.ultima_vista = imgs["vista"]
         cv2.imwrite(config.IMAGEN_DEBUG, self.ultima_vista)
-        return observacion_desde_matriz(matriz), extra
+        return obs, extra
 
     def leer_tablero(self):
         obs, extra = self._observar()

@@ -5,11 +5,31 @@ El mapa de correccion se calcula UNA vez: depende del lente y la resolucion, no 
 """
 
 import configparser
+import glob
 import time
 import cv2
 import numpy as np
+cv2.setNumThreads(4)  # evita que OpenCV se coma toda la CPU en hilos de video, lo que ocasionaba mis putisimas líneas verdes
 
 MODOS = {"2K": (4416, 1242), "FHD": (3840, 1080), "HD": (2560, 720), "VGA": (1344, 376)}
+
+
+def indice_por_nombre(nombre="ZED"):
+    """Primer /dev/videoN cuyo nombre contiene 'nombre' (el de captura es el de numero menor)."""
+    rutas = sorted(glob.glob("/sys/class/video4linux/video*/name"),
+                   key=lambda r: int(r.split("/")[-2][5:]))
+    for ruta in rutas:
+        if nombre in open(ruta).read():
+            return int(ruta.split("/")[-2][5:])
+    return None
+
+
+def frame_corrupto(img, frac=0.85, paso=8):
+    """True si alguna fila tiene verde saturado en casi todo el ancho (dato USB corrupto)."""
+    peq = img[::paso, ::paso]
+    hsv = cv2.cvtColor(peq, cv2.COLOR_BGR2HSV)
+    verde = cv2.inRange(hsv, (35, 80, 40), (90, 255, 255))
+    return bool((verde.mean(axis=1) / 255.0 > frac).any())
 
 
 def leer_conf(ruta, modo):
@@ -27,6 +47,12 @@ def leer_conf(ruta, modo):
 
 class Camara:
     def __init__(self, indice=2, modo="HD", ruta_conf=None, fps=15):
+        if indice == "auto":
+            indice = indice_por_nombre("ZED")
+            if indice is None:
+                raise RuntimeError("No se encontro la ZED conectada")
+            print(f"ZED encontrada en /dev/video{indice}")
+
         ancho, alto = MODOS[modo]
         self.cap = cv2.VideoCapture(indice, cv2.CAP_V4L2)
         self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"YUYV"))
@@ -37,6 +63,7 @@ class Camara:
         if not self.cap.isOpened():
             raise RuntimeError(f"No se pudo abrir la camara en el indice {indice}")
 
+        self.descartados = 0
         self.K, self.mapas = None, None
         if ruta_conf:
             self.K, dist = leer_conf(ruta_conf, modo)
@@ -46,11 +73,14 @@ class Camara:
             print("Aviso: sin archivo .conf, la imagen no se corrige y no hay K para solvePnP")
 
     def leer(self):
-        """Un frame del ojo izquierdo, corregido si hay calibracion. None si falla."""
+        """Un frame del ojo izquierdo, corregido si hay calibracion. None si falla o esta corrupto."""
         ok, frame = self.cap.read()
         if not ok or frame is None:
             return None
         izq = frame[:, :frame.shape[1] // 2]
+        if frame_corrupto(izq):
+            self.descartados += 1
+            return None
         if self.mapas is not None:
             izq = cv2.remap(izq, self.mapas[0], self.mapas[1], cv2.INTER_LINEAR)
         return izq
