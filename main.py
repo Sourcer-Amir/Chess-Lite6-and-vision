@@ -12,6 +12,7 @@ import cv2
 import numpy as np
 import config
 from juego import Juego
+from registro import Registro
 from vision import obtener_homografia_por_color
 
 P = 440   # lado de cada panel en pantalla
@@ -57,15 +58,19 @@ def panel_img(img, titulo, texto_vacio="ESPACIO: analisis"):
     return _rotulo(p, titulo)
 
 
-def construir_monitor(frame, analisis, juego):
+def construir_monitor(frame, analisis, juego, registro=None):
     extra, imgs, error = {}, {}, None
     if analisis:
         try:
-            _, extra, imgs = juego._procesar(frame, suavizar=True)
+            obs, extra, imgs = juego._procesar(frame, suavizar=True)
+            if registro:
+                registro.registrar(obs, extra, imgs)
         except Exception as e:           # p. ej. solvePnP fallo en un frame ruidoso
             error = str(e)
             M, mask = obtener_homografia_por_color(frame, config.LADO)
             imgs = {"M": M, "mask": mask}
+            if registro:
+                registro.registrar(None, {}, imgs, error=error[:80])
         M, mask = imgs.get("M"), imgs.get("mask")
     else:
         M, mask = obtener_homografia_por_color(frame, config.LADO)
@@ -89,12 +94,13 @@ def main():
         ord("s"): juego.estado,
     }
     analisis = False
+    registro = Registro()
     cv2.namedWindow("Monitor", cv2.WINDOW_AUTOSIZE)
     try:
         while True:
             frame = juego.cam.leer()
             if frame is not None:
-                cv2.imshow("Monitor", construir_monitor(frame, analisis, juego))
+                cv2.imshow("Monitor", construir_monitor(frame, analisis, juego, registro))
             tecla = cv2.waitKey(1) & 0xFF
             if tecla == ord("q"):
                 break
@@ -107,6 +113,7 @@ def main():
                 except Exception as e:
                     print(f"Error: {e}")
     finally:
+        registro.cerrar()
         juego.cerrar()
         cv2.destroyAllWindows()
 

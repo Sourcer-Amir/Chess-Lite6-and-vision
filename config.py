@@ -40,12 +40,19 @@ ALTURA_CARA_MM = 5.0      # empieza con la base, no con la punta  orignal: altur
 FILA0_ES_RANGO_1 = True        # True: la fila 0 es el rango 1
 COL0_ES_A = True               # True: la columna 0 es la columna 'a'
 
-# Nombre que devuelve vision.py -> simbolo de python-chess (mayuscula = blancas).
+# Nombre que devuelve vision.py -> simbolo de python-chess.
+# El SIMBOLO decide la pieza y el color: mayuscula = blancas, minuscula = negras
+# (K rey, Q reina, R torre, B alfil, N caballo, P peon).
+# Las LLAVES deben ser identicas (con mayusculas) a los nombres que asigna
+# vision.analizar_formas_tablero; si no coinciden, la pieza queda como '*'.
+#   cuadrado  -> 'Rey Blanco'   -> 'K'
+#   pentagono -> 'Rey Negro'    -> 'k'
+#   circulo   -> 'Torre Blanca' -> 'R'  (puede haber varias)
 # '*' = ocupada sin identificar, 'W*' / 'B*' = solo se sabe el color.
 NOMBRE_A_SIMBOLO = {
-    "Reina Negra": "q",
-    "Rey Negro": "k",
     "Rey Blanco": "K",
+    "Rey Negro": "k",
+    "Torre Blanca": "R",
     "Desconocido": "*",
 }
 

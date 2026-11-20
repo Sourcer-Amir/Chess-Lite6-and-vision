@@ -11,7 +11,7 @@ def obtener_homografia_por_color(img_bgr, lado=800):
     Calcula la matriz de homografia para rectificar la perspectiva del tablero.
     """
     hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
-    lower_green = np.array([35, 50, 50])
+    lower_green = np.array([35, 40, 30])
     upper_green = np.array([85, 255, 255])
     mask = cv2.inRange(hsv, lower_green, upper_green)
 
@@ -236,13 +236,17 @@ def analizar_formas_tablero(plano_rectificado):
         _, n_agudas = contar_esquinas(P)
         circ = 4.0 * np.pi * area / (perimetro ** 2)
 
+                # Clasificacion por forma vista desde arriba (ver NOMBRE_A_SIMBOLO en config.py):
+        #   cuadrado  -> 4 esquinas agudas (<120 grados)      -> Rey Blanco
+        #   pentagono -> 5 esquinas agudas                    -> Rey Negro
+        #   circulo   -> 0 esquinas y circularidad > 0.80     -> Torre Blanca
         pieza = 'Desconocido'
         if n_agudas == 4:
-            pieza = 'Reina Negra'
+            pieza = 'Rey Blanco'
         elif n_agudas == 5:
             pieza = 'Rey Negro'
         elif n_agudas == 0 and circ > 0.80:
-            pieza = 'Rey Blanco'
+            pieza = 'Torre Blanca'
 
         M = cv2.moments(cnt)
         if M["m00"] != 0:
@@ -322,7 +326,7 @@ def dibujar_tablero(plano, matriz):
     for r in range(8):
         for c in range(8):
             val = matriz[r, c]
-            if val in ('Reina Negra', 'Rey Negro', 'Rey Blanco') or val == 1:
+            if val in ('Rey Blanco', 'Rey Negro', 'Torre Blanca') or val == 1:
                 cx = c * cw + cw // 2
                 cy = r * ch + ch // 2
                 cv2.circle(vis, (cx, cy), 12, (0, 75, 150), -1)
