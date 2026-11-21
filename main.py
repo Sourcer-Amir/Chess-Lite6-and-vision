@@ -2,6 +2,7 @@
 Partida con teclado (sin MATLAB). Uso: python3 main.py [--sin-robot] [--sin-motor]
 Ventana "Monitor": 1 en vivo (cuadro guia y cruz fijos), 2 mascara verde, 3 tablero rectificado,
 4 piezas detectadas. El analisis en vivo arranca solo: cada casilla va votando la identidad de su pieza.
+Ventana "Tablero 3D": el estado del juego con piezas en 3D; arrastra con el mouse para girarla.
   i       : iniciar. Usa las piezas votadas; si alguna no se ha identificado ni una vez, no juega.
             El robot hace la primera jugada.
   ENTER   : tu turno. Haz tu jugada y presiona ENTER: se reconoce y el robot contesta.
@@ -16,6 +17,7 @@ import numpy as np
 import config
 from juego import Juego
 from registro import Registro
+from vista3d import Vista3D
 from vision import obtener_homografia_por_color
 
 P = 440   # lado de cada panel en pantalla
@@ -97,13 +99,16 @@ MENSAJES = {
 
 
 def mostrar_jugada(quien, r):
+    """Imprime la jugada y devuelve el mismo texto (para la ventana 3D)."""
     if r.get("ok"):
         jaque = "  (jaque)" if r.get("jaque") else ""
-        print(f"  {quien}: {r['uci']} [{r['tipo']}]{jaque}")
+        txt = f"{quien}: {r['uci']} [{r['tipo']}]{jaque}"
     else:
-        print(f"  {quien}: {MENSAJES.get(r.get('error'), r.get('mensaje') or r)}")
+        txt = f"{quien}: {MENSAJES.get(r.get('error'), r.get('mensaje') or r)}"
         if r.get("error") == "no_coincide" and r.get("mas_parecida"):
-            print(f"    (la jugada legal mas parecida seria {r['mas_parecida']})")
+            txt += f" (la jugada legal mas parecida seria {r['mas_parecida']})"
+    print("  " + txt)
+    return txt
 
 
 def main():
@@ -114,12 +119,15 @@ def main():
     analisis = True
     registro = Registro()
     cv2.namedWindow("Monitor", cv2.WINDOW_AUTOSIZE)
+    vista = Vista3D()
+    mensaje = ""
     fin = None
     try:
         while fin is None:
             frame = juego.cam.leer()
             if frame is not None:
                 cv2.imshow("Monitor", construir_monitor(frame, analisis, juego, registro))
+            vista.mostrar(juego, mensaje)
             tecla = cv2.waitKey(1) & 0xFF
             if tecla == ord("q"):
                 break
@@ -138,23 +146,26 @@ def main():
                     r = juego.iniciar()
                     if "inicio" in r:
                         print("Piezas:", r["inicio"]["piezas"])
-                        mostrar_jugada("Robot", r)
+                        mensaje = mostrar_jugada("Robot", r)
                         fin = r.get("mensaje_fin")
                     else:
-                        print(r.get("mensaje", r))
+                        mensaje = r.get("mensaje", str(r))
+                        print(mensaje)
                 elif tecla in (10, 13):
                     if juego.board is None:
                         print("Primero inicia la partida con i.")
                         continue
                     r = juego.turno()
-                    mostrar_jugada("Tu", r["humano"])
+                    mensaje = mostrar_jugada("Tu", r["humano"])
                     if "robot" in r:
-                        mostrar_jugada("Robot", r["robot"])
+                        mensaje += " | " + mostrar_jugada("Robot", r["robot"])
                     fin = r.get("mensaje_fin")
             except Exception as e:
                 print(f"Error: {e}")
         if fin:
             print("\n" + "=" * 50 + f"\n  {fin}\n" + "=" * 50)
+            vista.mostrar(juego, fin)          # deja ver el final unos segundos
+            cv2.waitKey(5000)
     finally:
         registro.cerrar()
         juego.cerrar()

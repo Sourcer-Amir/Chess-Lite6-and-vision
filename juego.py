@@ -294,6 +294,14 @@ class Juego:
             px, py = self.robot.casillero_a_pixel(fila, col, config.LADO)
             pose = self.robot.pixel_a_pose(px, py)
         pose[2] += config.DZ_POR_PIEZA.get(simbolo.lower(), 0.0)
+        # Gripper siempre perpendicular al tablero (a 90 grados) para tomar y sobre todo para dejar:
+        # inclinado, la pieza cae corrida. Se puede fijar en config.ORIENTACION_AGARRE = [roll, pitch, yaw];
+        # por defecto roll 180, pitch 0 y el yaw de P1. ORIENTACION_AGARRE = False usa la interpolada.
+        ori = getattr(config, "ORIENTACION_AGARRE", None)
+        if ori is None:
+            ori = [180.0, 0.0, config.P1_ROB[5]]
+        if ori is not False:
+            pose[3:6] = [float(a) for a in ori]
         return pose
 
     def _ejecutar_paso(self, ori, des):
