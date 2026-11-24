@@ -5,6 +5,7 @@ Todas las funciones publicas devuelven dict con tipos simples (para JSON y MATLA
 
 import json
 import os
+import time
 
 import chess
 import cv2
@@ -60,23 +61,37 @@ class Votacion:
 
 
 class Juego:
+    def log(self, msg):
+        """Mensaje con hora en la terminal y en logs/partida_<sesion>.log."""
+        linea = f"[{time.strftime('%H:%M:%S')}] {msg}"
+        print(linea, flush=True)
+        try:
+            os.makedirs("logs", exist_ok=True)
+            with open(os.path.join("logs", f"partida_{self._sesion_log}.log"), "a") as f:
+                f.write(linea + "\n")
+        except Exception:
+            pass
+
     def __init__(self, con_robot=True, con_motor=True):
+        self._sesion_log = time.strftime("%Y%m%d_%H%M%S")
+        self.pendiente = None          # jugada del robot que fallo a medias: {move, pasos, hechos}
         self.cam = Camara(config.CAM_INDICE, config.CAM_MODO, config.CAM_CONF)
         self.robot = None
         if con_robot:
             from robot import ControladorLite6
             self.robot = ControladorLite6(ip=config.ROBOT_IP)
+            self.robot.log = self.log
             self.robot.conectar()
             ruta9 = getattr(config, "CALIBRACION_9", "calibracion9.json")
             if ruta9 and os.path.exists(ruta9):
                 with open(ruta9) as f:
                     self.robot.configurar_calibracion_9puntos(json.load(f)["puntos"],
                                                               dz=getattr(config, "DZ_CALIBRACION_9", 0.0))
-                print(f"Robot: calibracion de 9 puntos ({ruta9})")
+                self.log(f"Robot: calibracion de 9 puntos ({ruta9})")
             else:
                 self.robot.configurar_calibracion_3puntos(config.P1_IMG, config.P1_ROB, config.P2_IMG,
                                                           config.P2_ROB, config.P3_IMG, config.P3_ROB)
-                print("Robot: calibracion de 3 puntos (config.py); para 9 puntos corre calibrar9.py")
+                self.log("Robot: calibracion de 3 puntos (config.py); para 9 puntos corre calibrar9.py")
         self.motor = None
         if con_motor:
             from motor import Motor
@@ -164,6 +179,7 @@ class Juego:
                     "mensaje": "No veo piezas en el tablero (o no veo el marco verde)."}
         faltan = sorted(chess.square_name(sq) for sq, s in ocupadas.items() if s is None)
         if faltan:
+            self.log(f"Iniciar: casillas sin identificar {faltan}")
             return {"ok": False, "error": "piezas_sin_identificar", "casillas": faltan,
                     "mensaje": "No juego: estas casillas tienen una pieza que todavia no se ha "
                                "identificado ni una vez: " + ", ".join(faltan)}
@@ -172,12 +188,15 @@ class Juego:
         board, avisos = tablero_desde_observacion(obs, blancas_mueven=self.robot_blancas)
         if avisos:
             avisos = self._explicar_status(board)
+            self.log(f"Iniciar: posicion invalida ({', '.join(avisos)}) | votos {observacion_a_texto(obs)}")
             return {"ok": False, "error": "posicion_invalida", "avisos": avisos,
                     "piezas": observacion_a_texto(obs),
                     "mensaje": "No juego: " + ", ".join(avisos) + ". Lo que vote cada casilla: "
                                + str(observacion_a_texto(obs))}
         self.board = board
         self.i_cementerio, self.i_banco = 0, {}
+        self.pendiente = None
+        self.log(f"Partida iniciada | piezas: {observacion_a_texto(obs)} | FEN {board.fen()}")
         r = self.jugada_robot()
         r["inicio"] = {"fen": board.fen(), "piezas": observacion_a_texto(obs)}
         return r
@@ -190,13 +209,24 @@ class Juego:
     def jugada_humano(self):
         self._requiere_partida()
         obs, _ = self._observar()
+        esperado = {sq: p.symbol() for sq, p in self.board.piece_map().items()}
+        cambios = sorted(chess.square_name(sq) for sq in set(esperado) | set(obs)
+                         if esperado.get(sq) != obs.get(sq))
+        self.log(f"Humano: la camara ve {len(obs)} piezas; casillas distintas a lo esperado: {cambios or 'ninguna'}")
         m, info = inferir_jugada(self.board, obs)
         if m is None:
-            return {"ok": False, **info}
+            self.log(f"Humano: jugada NO reconocida ({info.get('error')}) | detalle: {info}")
+            return {"ok": False, "cambios": cambios, **info}
+        self.log(f"Humano: jugada reconocida {m.uci()} (costo {info.get('costo')})")
         return self._aplicar(m)
 
     def turno(self):
-        """Reconoce la jugada del humano y, si es legal y la partida sigue, el robot contesta."""
+        """Reconoce la jugada del humano y, si es legal y la partida sigue, el robot contesta.
+        Si el robot tiene una jugada pendiente (fallo a medias), primero la reintenta."""
+        if self.pendiente is not None or (self.board is not None and self.board.turn == self.robot_blancas):
+            self.log("Turno: el robot tiene una jugada pendiente; se reintenta antes de leer al humano")
+            r = self.jugada_robot()
+            return {"humano": {"ok": False, "error": "robot_pendiente"}, "robot": r, **self.estado()}
         h = self.jugada_humano()
         if not h["ok"] or h.get("terminada"):
             return {"humano": h, **({} if not h["ok"] else self.estado())}
@@ -212,24 +242,59 @@ class Juego:
         return self._aplicar(m)
 
     def jugada_robot(self, uci=None):
+        """Decide y ejecuta la jugada del robot. Si un paso falla (p. ej. choque), la jugada queda
+        PENDIENTE: el siguiente llamado continua desde el paso que fallo, o se termina a mano
+        con completar_a_mano(). El tablero interno solo se actualiza cuando todos los pasos salieron."""
         self._requiere_partida()
-        if self.board.is_game_over():
-            return {"ok": False, "error": "partida_terminada", **self.estado()}
-        if uci is None:
-            if self.motor is None:
-                return {"ok": False, "error": "sin_motor"}
-            uci = self.motor.mejor_jugada(self.board)
-        m = chess.Move.from_uci(uci)
-        if m not in self.board.legal_moves:
-            return {"ok": False, "error": "ilegal", "uci": uci}
+        if self.pendiente is not None:
+            m, pasos, inicio = self.pendiente["move"], self.pendiente["pasos"], self.pendiente["hechos"]
+            self.log(f"Robot: reintentando {m.uci()} desde el paso {inicio + 1}/{len(pasos)}")
+        else:
+            if self.board.is_game_over():
+                return {"ok": False, "error": "partida_terminada", **self.estado()}
+            if uci is None:
+                if self.motor is None:
+                    return {"ok": False, "error": "sin_motor"}
+                uci = self.motor.mejor_jugada(self.board)
+            m = chess.Move.from_uci(uci)
+            if m not in self.board.legal_moves:
+                self.log(f"Robot: el motor propuso una jugada ilegal {uci}")
+                return {"ok": False, "error": "ilegal", "uci": uci}
+            pasos, inicio = secuencia_robot(self.board, m), 0
+            self.log(f"Robot: juega {m.uci()} ({tipo_jugada(self.board, m)}); pasos: "
+                     + " | ".join(f"{o}->{d}" for o, d in pasos))
 
-        pasos = secuencia_robot(self.board, m)
         if self.robot is not None:
-            for i, (ori, des) in enumerate(pasos):
+            for i in range(inicio, len(pasos)):
+                ori, des = pasos[i]
+                self.log(f"Robot: paso {i + 1}/{len(pasos)}: {ori} -> {des}")
                 if not self._ejecutar_paso(ori, des):
-                    return {"ok": False, "error": "fallo_robot", "paso": i, "pasos": pasos}
+                    self.pendiente = {"move": m, "pasos": pasos, "hechos": i}
+                    err = getattr(self.robot, "ultimo_error", None) or {}
+                    aviso = ("la pieza puede haber quedado EN EL GRIPPER o caida cerca"
+                             if err.get("lleva_pieza") else f"la pieza deberia seguir en {ori}")
+                    self.log(f"Robot: la jugada {m.uci()} quedo PENDIENTE en el paso {i + 1}/{len(pasos)} "
+                             f"({ori} -> {des}); {aviso}.")
+                    self.log("   Opciones: ENTER = reintentar desde ese paso (antes acomoda la pieza en "
+                             f"{ori} si se movio) | c = terminar la jugada a mano")
+                    return {"ok": False, "error": "fallo_robot", "paso": i, "pasos": pasos, "uci": m.uci(),
+                            "detalle_robot": err}
+                self.log(f"Robot: paso {i + 1}/{len(pasos)} completado")
+        self.pendiente = None
         r = self._aplicar(m)
         r["pasos"] = pasos
+        self.log(f"Robot: jugada {m.uci()} terminada | FEN {self.board.fen()}")
+        return r
+
+    def completar_a_mano(self):
+        """El humano termino a mano la jugada pendiente del robot (deja las piezas como deben quedar)."""
+        if self.pendiente is None:
+            return {"ok": False, "error": "sin_pendiente"}
+        m = self.pendiente["move"]
+        self.pendiente = None
+        self.log(f"Robot: la jugada {m.uci()} se termino A MANO; se aplica al tablero interno")
+        r = self._aplicar(m)
+        r["a_mano"] = True
         return r
 
     def estado(self):
@@ -291,6 +356,8 @@ class Juego:
     def _aplicar(self, m):
         tipo = tipo_jugada(self.board, m)
         self.board.push(m)
+        if self.board.is_game_over():
+            self.log(f"Fin de partida: {self._mensaje_fin()}")
         return {"ok": True, "uci": m.uci(), "tipo": tipo, **self.estado()}
 
     def _pose(self, lugar, simbolo):

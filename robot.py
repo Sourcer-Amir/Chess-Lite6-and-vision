@@ -26,6 +26,8 @@ class ControladorLite6:
         self.matriz_afin = None
         self.coef = None
         self.malla = None          # calibracion de 9 puntos: (xs, ys, poses 3x3x6)
+        self.ultimo_error = None   # dict con la etapa y los codigos del ultimo fallo de movimiento
+        self.log = print           # juego.py lo reemplaza por su log con hora
         self.calibrado = False
         # Postura de descanso (grados). Verifica en Studio que sean grados y no radianes.
         self.angulos_home = [0.0, 0.4, -0.3, 2.5, 0.0, -1.1]
@@ -137,28 +139,42 @@ class ControladorLite6:
         q[2] += dz
         return q
 
-    def _mover(self, pose_rad):
+    def _fallo(self, etapa, code, pose_rad=None, extra=""):
+        """Guarda y reporta un fallo de movimiento con los codigos del controlador."""
+        err = getattr(self.arm, "error_code", None)
+        warn = getattr(self.arm, "warn_code", None)
+        estado = getattr(self.arm, "state", None)
+        self.ultimo_error = {"etapa": etapa, "code": code, "error_code": err, "warn_code": warn, "estado": estado,
+                             "pose": None if pose_rad is None else
+                             [round(v, 1) for v in pose_rad[:3]] + [round(math.degrees(a), 1) for a in pose_rad[3:6]]}
+        self.log(f"ROBOT FALLO en '{etapa}': code {code} | error_code {err} | warn_code {warn} | estado {estado}"
+                 f"{' | ' + extra if extra else ''}")
+        if self.ultimo_error["pose"]:
+            self.log(f"   pose pedida [mm, grados]: {self.ultimo_error['pose']}")
+        if err:
+            self.log("   (error_code distinto de 0: buscar el codigo en UFactory Studio; un choque "
+                     "suele aparecer como error de colision / corriente anormal)")
+
+    def _mover(self, pose_rad, etapa="movimiento lineal"):
         """Movimiento lineal. pose_rad = [x, y, z, roll, pitch, yaw] con angulos en radianes."""
         code = self.arm.set_position(x=pose_rad[0], y=pose_rad[1], z=pose_rad[2],
                                      roll=pose_rad[3], pitch=pose_rad[4], yaw=pose_rad[5],
                                      speed=VEL_LINEAL, is_radian=True, wait=True)
         if code != 0:
-            print(f"set_position fallo (code {code}) | error: {self.arm.error_code} "
-                  f"| warn: {self.arm.warn_code} | pose: {[round(v, 2) for v in pose_rad]}")
+            self._fallo(etapa, code, pose_rad)
         return code == 0
 
-    def _ir_articular(self, pose_rad):
+    def _ir_articular(self, pose_rad, etapa="aproximacion articular"):
         """Va a una pose cartesiana mediante IK y movimiento articular (evita trayectorias lineales imposibles)."""
         code_ik, angulos = self.arm.get_inverse_kinematics(
             pose_rad, input_is_radian=True, return_is_radian=True)
         if code_ik != 0:
-            print(f"Error cinematico (code {code_ik}): pose fuera de alcance o singular: "
-                  f"{[round(v, 2) for v in pose_rad]}")
+            self._fallo(etapa, code_ik, pose_rad, "cinematica inversa: pose fuera de alcance o singular")
             return False
         code = self.arm.set_servo_angle(angle=angulos, speed=math.radians(VEL_ARTICULAR_DEG),
                                         is_radian=True, wait=True)
         if code != 0:
-            print(f"Error de motor en movimiento articular (code {code}) | error: {self.arm.error_code}")
+            self._fallo(etapa, code, pose_rad, "movimiento articular")
             return False
         return True
 
@@ -185,35 +201,44 @@ class ControladorLite6:
         return self._mover(p_up)
 
     def mover_pieza(self, pose_origen, pose_destino):
-        """Toma en pose_origen y suelta en pose_destino (poses en mm y grados)."""
+        """Toma en pose_origen y suelta en pose_destino (poses en mm y grados).
+        Si falla, deja en self.ultimo_error la etapa y los codigos, y 'lleva_pieza' indica si la pieza
+        podria haber quedado en el gripper."""
         if not self.arm:
-            print("Robot no conectado.")
+            self.log("Robot no conectado.")
             return False
+        self.ultimo_error = None
         self._preparar()
 
         o = self._a_rad(pose_origen)
         d = self._a_rad(pose_destino)
         o_up, d_up = self._arriba(o), self._arriba(d)
 
-        # 1. Abrir gripper y aproximacion articular sobre el origen
-        self.abrir_gripper()
-        if not self._ir_articular(o_up):
+        def falla(lleva):
+            if self.ultimo_error is not None:
+                self.ultimo_error["lleva_pieza"] = lleva
             return False
 
+        # 1. Abrir gripper y aproximacion articular sobre el origen
+        self.abrir_gripper()
+        if not self._ir_articular(o_up, "ir arriba del origen"):
+            return falla(False)
+
         # 2. Descenso al origen y agarre
-        if not self._mover(o):
-            return False
+        if not self._mover(o, "bajar al origen"):
+            return falla(False)
         self.cerrar_gripper()
 
         # 3. Elevacion y traslado (sin detener el gripper: se mantiene cerrado)
-        for paso in (o_up, d_up, d):
-            if not self._mover(paso):
-                return False
+        for paso, etapa in ((o_up, "subir con la pieza"), (d_up, "trasladar arriba del destino"),
+                            (d, "bajar al destino")):
+            if not self._mover(paso, etapa):
+                return falla(True)
 
         # 4. Soltar en destino y elevar
         self.abrir_gripper()
-        if not self._mover(d_up):
-            return False
+        if not self._mover(d_up, "subir despues de soltar"):
+            return falla(False)
         self.detener_gripper()
 
         # 5. Home

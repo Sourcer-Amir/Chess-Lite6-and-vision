@@ -6,6 +6,8 @@ Ventana "Tablero 3D": el estado del juego con piezas en 3D; arrastra con el mous
   i       : iniciar. Usa las piezas votadas; si alguna no se ha identificado ni una vez, no juega.
             El robot hace la primera jugada.
   ENTER   : tu turno. Haz tu jugada y presiona ENTER: se reconoce y el robot contesta.
+            Si el robot fallo (choque), ENTER reintenta su jugada desde el paso que fallo.
+  c       : terminar A MANO la jugada pendiente del robot (despues de acomodar tu las piezas).
   ESPACIO : pausar / reanudar el analisis en vivo (y el registro en logs/)
   q       : salir
 Al haber jaque mate o tablas se muestra el resultado y el programa termina.
@@ -93,7 +95,8 @@ MENSAJES = {
     "no_coincide": "Lo que veo no coincide con ninguna jugada legal. Revisa las piezas y presiona ENTER.",
     "ambigua": "Hay varias jugadas posibles con lo que veo. Acomoda bien las piezas y presiona ENTER.",
     "promocion_ambigua": "No distingo a que pieza promoviste.",
-    "fallo_robot": "El robot no pudo completar el movimiento. Revisa el brazo.",
+    "fallo_robot": "El robot no pudo completar su jugada (ver log). ENTER = reintentar, c = terminarla a mano.",
+    "robot_pendiente": "Primero se reintento la jugada pendiente del robot.",
     "sin_motor": "No hay motor de ajedrez (corriste con --sin-motor).",
 }
 
@@ -156,9 +159,20 @@ def main():
                         print("Primero inicia la partida con i.")
                         continue
                     r = juego.turno()
-                    mensaje = mostrar_jugada("Tu", r["humano"])
-                    if "robot" in r:
-                        mensaje += " | " + mostrar_jugada("Robot", r["robot"])
+                    if r["humano"].get("error") == "robot_pendiente":
+                        mensaje = mostrar_jugada("Robot (reintento)", r["robot"])
+                    else:
+                        mensaje = mostrar_jugada("Tu", r["humano"])
+                        if "robot" in r:
+                            mensaje += " | " + mostrar_jugada("Robot", r["robot"])
+                    fin = r.get("mensaje_fin")
+                elif tecla == ord("c"):
+                    if juego.pendiente is None:
+                        print("No hay ninguna jugada pendiente del robot.")
+                        continue
+                    r = juego.completar_a_mano()
+                    mensaje = f"Robot: {r['uci']} terminada a mano. Tu turno."
+                    print("  " + mensaje)
                     fin = r.get("mensaje_fin")
             except Exception as e:
                 print(f"Error: {e}")
