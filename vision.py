@@ -108,13 +108,19 @@ def nombre_color(rgb_median):
 
 # Umbrales del clasificador de formas (se pueden sobrescribir en config.UMBRALES_FORMA)
 UMBRALES = {
-    "entrantes_cruz": 3,       # 3 o mas entrantes profundos -> cruz (la unica forma con entrantes)
+    # Ajustados con datos reales (sesion 20261124_162844, camara a ~40 cm):
+    #   triangulo relleno 0.58-0.65 | pentagono 0.73-0.77 | circulo 0.78-0.81 | cuadrado 0.94-0.97
+    #   solidez: cruz 0.93-0.95, las demas >= 0.95 (circulo/cuadrado/pentagono >= 0.97)
+    #   entrantes: cruz 1-4 (casi siempre 4), circulo 0-1 (el poste), las demas 0
+    "entrantes_cruz": 2,           # 2 o mas entrantes profundos -> cruz
     "profundidad_entrante": 0.06,  # un entrante cuenta si es mas profundo que esta fraccion del lado
-    "solidez_cruz": 0.85,      # respaldo: solidez menor -> cruz
-    "relleno_triangulo": 0.62, # relleno menor -> triangulo
-    "relleno_cuadrado": 0.88,  # relleno mayor o igual -> cuadrado
-    "vertices_circulo": 7,     # entre circulo y pentagono: >= 7 vertices -> circulo, si no pentagono
-    "eps_vertices": 0.025,     # tolerancia de approxPolyDP (fraccion del perimetro)
+    "relleno_triangulo": 0.69,     # relleno menor -> triangulo
+    "solidez_cruz": 0.955,         # respaldo (despues del triangulo): solidez menor -> cruz
+    "relleno_cuadrado": 0.88,      # relleno mayor o igual -> cuadrado
+    "vertices_circulo": 8,         # >= 8 vertices -> circulo
+    "vertices_pentagono": 5,       # <= 5 vertices -> pentagono
+    "relleno_circulo": 0.775,      # con 6-7 vertices: relleno >= -> circulo, si no pentagono
+    "eps_vertices": 0.025,         # tolerancia de approxPolyDP (fraccion del perimetro)
 }
 UMBRALES.update(getattr(config, "UMBRALES_FORMA", {}))
 
@@ -161,19 +167,26 @@ def rasgos_forma(cnt):
 
 
 def clasificar_forma(r):
-    """Arbol de decision (estrategia A). Devuelve 'cruz', 'triangulo', 'cuadrado', 'circulo' o 'pentagono'.
-    1. 3+ entrantes profundos (o solidez baja)  -> cruz
-    2. relleno bajo                             -> triangulo
-    3. relleno alto                             -> cuadrado
-    4. circulo vs pentagono por vertices        -> circulo (>= 7) o pentagono"""
+    """Arbol de decision. Devuelve 'cruz', 'triangulo', 'cuadrado', 'circulo' o 'pentagono'.
+    1. 2+ entrantes profundos                 -> cruz
+    2. relleno bajo                           -> triangulo
+    3. solidez baja (respaldo de la cruz)     -> cruz
+    4. relleno alto                           -> cuadrado
+    5. circulo vs pentagono: vertices (>= 8 circulo, <= 5 pentagono); con 6-7 decide el relleno"""
     u = UMBRALES
-    if r["entrantes"] >= u["entrantes_cruz"] or r["solidez"] < u["solidez_cruz"]:
+    if r["entrantes"] >= u["entrantes_cruz"]:
         return "cruz"
     if r["relleno"] < u["relleno_triangulo"]:
         return "triangulo"
+    if r["solidez"] < u["solidez_cruz"]:
+        return "cruz"
     if r["relleno"] >= u["relleno_cuadrado"]:
         return "cuadrado"
-    return "circulo" if r["vertices"] >= u["vertices_circulo"] else "pentagono"
+    if r["vertices"] >= u["vertices_circulo"]:
+        return "circulo"
+    if r["vertices"] <= u["vertices_pentagono"]:
+        return "pentagono"
+    return "circulo" if r["relleno"] >= u["relleno_circulo"] else "pentagono"
 
 
 def douglas_peucker(P, tol):
