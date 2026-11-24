@@ -70,7 +70,8 @@ class Juego:
             ruta9 = getattr(config, "CALIBRACION_9", "calibracion9.json")
             if ruta9 and os.path.exists(ruta9):
                 with open(ruta9) as f:
-                    self.robot.configurar_calibracion_9puntos(json.load(f)["puntos"])
+                    self.robot.configurar_calibracion_9puntos(json.load(f)["puntos"],
+                                                              dz=getattr(config, "DZ_CALIBRACION_9", 0.0))
                 print(f"Robot: calibracion de 9 puntos ({ruta9})")
             else:
                 self.robot.configurar_calibracion_3puntos(config.P1_IMG, config.P1_ROB, config.P2_IMG,
@@ -295,7 +296,10 @@ class Juego:
     def _pose(self, lugar, simbolo):
         """Pose [mm, grados] de una casilla, del cementerio o del banco, con el ajuste de Z de la pieza."""
         if lugar == CEMENTERIO:
-            pose = list(config.CEMENTERIO_POSES[self.i_cementerio])
+            if not config.CEMENTERIO_POSES:
+                raise RuntimeError("CEMENTERIO_POSES esta vacio en config.py")
+            # si hay menos lugares que capturas, se reutiliza el ultimo (p. ej. una sola caja)
+            pose = list(config.CEMENTERIO_POSES[min(self.i_cementerio, len(config.CEMENTERIO_POSES) - 1)])
         elif lugar.startswith("BANCO:"):
             s = lugar.split(":")[1]
             pose = list(config.BANCO_POSES[s][self.i_banco.get(s, 0)])

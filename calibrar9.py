@@ -3,8 +3,17 @@ Calibracion del robot con 9 puntos (malla 3x3 sobre el tablero). Se corre una ve
 queda en calibracion9.json y juego.py lo carga solo (si no existe, usa P1-P3 de config.py).
 
 Uso:
-  python3 calibrar9.py            -> grabar los 9 puntos
+  python3 calibrar9.py --jog      -> grabar moviendo el robot con el TECLADO, gripper siempre vertical
+                                     (recomendado: en modo manual es dificil dejarlo a 90 grados)
+  python3 calibrar9.py            -> grabar moviendo el robot con la mano (modo manual)
   python3 calibrar9.py --probar   -> el robot visita los 9 puntos y algunas casillas para verificar
+
+Teclas del modo --jog (direcciones vistas desde TU lado, opuesto al robot):
+  w = alejar de ti   s = acercar a ti   a = a tu izquierda   d = a tu derecha
+  r = subir          f = bajar
+  1 = pasos de 10 mm   2 = pasos de 2 mm   3 = pasos de 0.5 mm   4 = pasos de 50 mm   5 = pasos de 100 mm
+  (con 4 y 5 el robot se mueve mucho de golpe: usalos solo con el gripper arriba, lejos del tablero)
+  ENTER = guardar el punto | b = volver a grabar el anterior | x = salir sin guardar
 
 Antes de grabar
   1. Configura el TCP del gripper en UFactory Studio (Settings -> TCP) con el largo real del gripper.
@@ -23,7 +32,9 @@ Como se graba cada punto
 import json
 import math
 import sys
+import termios
 import time
+import tty
 
 import chess
 import numpy as np
@@ -52,6 +63,88 @@ def revisar_vertical(pose):
     if desvio > 5:
         print(f"   AVISO: el gripper no esta vertical (roll {roll:.1f}, pitch {pitch:.1f}). "
               "Conviene repetir este punto (r).")
+
+
+def tecla():
+    """Lee una tecla sin esperar ENTER (Linux)."""
+    fd = sys.stdin.fileno()
+    viejo = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        return sys.stdin.read(1)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, viejo)
+
+
+def grabar_jog():
+    """Mueve el robot con el teclado manteniendo el gripper vertical; guarda la pose real con ENTER."""
+    robot = ControladorLite6(ip=config.ROBOT_IP)
+    robot.conectar()
+    arm = robot.arm
+    yaw = config.P1_ROB[5]
+    # Direcciones desde el lado del humano: +X del robot = hacia el humano, +Y = a la derecha del humano
+    mover = {"w": (-1, 0, 0), "s": (1, 0, 0), "a": (0, -1, 0), "d": (0, 1, 0), "r": (0, 0, 1), "f": (0, 0, -1)}
+    pasos = {"1": 10.0, "2": 2.0, "3": 0.5, "4": 50.0, "5": 100.0}
+    paso = 2.0
+
+    def ir(p):
+        code = arm.set_position(x=p[0], y=p[1], z=p[2], roll=180.0, pitch=0.0, yaw=yaw,
+                                speed=30, is_radian=False, wait=True)
+        if code != 0:
+            print(f"\r   No se pudo mover (code {code}, error {arm.error_code}). Limpia el error en Studio si sigue.\r")
+            robot._preparar()
+        return code == 0
+
+    _, actual = arm.get_position(is_radian=False)
+    p = [float(actual[0]), float(actual[1]), float(actual[2]) + 30.0]   # primero sube 30 mm por seguridad
+    print("Subiendo 30 mm y poniendo el gripper vertical...")
+    ir(p)
+    print(__doc__)
+    puntos = []
+    orden = [(px, py) for py in MALLA for px in MALLA]
+    k = 0
+    try:
+        while k < len(orden):
+            px, py = orden[k]
+            print(f"\nPunto {k + 1}/9: {nombre_cruce(px, py)}   (paso {paso} mm)")
+            while True:
+                t = tecla().lower()
+                if t in mover:
+                    dx, dy, dz = mover[t]
+                    nuevo = [p[0] + dx * paso, p[1] + dy * paso, p[2] + dz * paso]
+                    if ir(nuevo):
+                        p = nuevo
+                    print(f"\r   x {p[0]:7.1f}  y {p[1]:7.1f}  z {p[2]:6.1f}   ", end="", flush=True)
+                elif t in pasos:
+                    paso = pasos[t]
+                    print(f"\r   paso = {paso} mm" + " " * 20, end="", flush=True)
+                elif t in ("\r", "\n"):
+                    code, pose = arm.get_position(is_radian=False)
+                    if code != 0:
+                        print(f"\n   No pude leer la posicion (code {code}).")
+                        continue
+                    pose = [round(float(v), 2) for v in pose]
+                    print(f"\n   Guardado: {pose}")
+                    puntos.append({"px": px, "py": py, "pose": pose})
+                    k += 1
+                    break
+                elif t == "b" and k > 0:
+                    puntos.pop()
+                    k -= 1
+                    print("\n   Se repite el punto anterior.")
+                    break
+                elif t in ("x", "\x03"):
+                    print("\nSalida sin guardar.")
+                    return
+    finally:
+        arm.set_position(z=p[2] + 30.0, relative=False, x=p[0], y=p[1], roll=180.0, pitch=0.0, yaw=yaw,
+                         speed=30, is_radian=False, wait=True)
+        robot.desconectar()
+
+    with open(RUTA, "w") as f:
+        json.dump({"puntos": puntos, "fecha": time.strftime("%Y-%m-%d %H:%M"), "modo": "jog vertical"}, f, indent=2)
+    print(f"\nCalibracion guardada en {RUTA}")
+    revisar_escala(puntos)
 
 
 def grabar():
@@ -117,7 +210,7 @@ def probar():
     revisar_escala(puntos)
     robot = ControladorLite6(ip=config.ROBOT_IP)
     robot.conectar()
-    robot.configurar_calibracion_9puntos(puntos)
+    robot.configurar_calibracion_9puntos(puntos, dz=getattr(config, "DZ_CALIBRACION_9", 0.0))
     yaw = config.P1_ROB[5]
     objetivos = [(d["px"], d["py"], "cruce grabado") for d in puntos]
     for nombre in ("a1", "h1", "a8", "h8", "e4", "d5"):
@@ -142,4 +235,9 @@ def probar():
 
 
 if __name__ == "__main__":
-    probar() if "--probar" in sys.argv else grabar()
+    if "--probar" in sys.argv:
+        probar()
+    elif "--jog" in sys.argv:
+        grabar_jog()
+    else:
+        grabar()

@@ -71,11 +71,14 @@ class ControladorLite6:
                      for nombre, i in (("z", 2), ("roll", 3), ("pitch", 4), ("yaw", 5))}
         self.calibrado = True
 
-    def configurar_calibracion_9puntos(self, puntos):
+    def configurar_calibracion_9puntos(self, puntos, dz=0.0):
         """
         puntos: lista de 9 dicts {"px", "py", "pose": [x, y, z, roll, pitch, yaw]} (mm y grados)
         sobre una malla 3x3 (3 valores distintos de px y 3 de py). Ver calibrar9.py.
+        dz: mm que se suman a Z. Los 9 puntos se graban YA a la altura de agarre, asi que por
+        defecto es 0 (el +8 de la calibracion de 3 puntos no aplica aqui).
         """
+        self.dz_malla = float(dz)
         xs = sorted({float(p["px"]) for p in puntos})
         ys = sorted({float(p["py"]) for p in puntos})
         if len(xs) != 3 or len(ys) != 3 or len(puntos) != 9:
@@ -107,7 +110,7 @@ class ControladorLite6:
             x, y, z, roll, pitch, yaw = self._pose_malla(px, py)
             if roll > 180.0:
                 roll -= 360.0
-            return [x, y, z + 8.0, roll, pitch, yaw]
+            return [x, y, z + self.dz_malla, roll, pitch, yaw]
         x, y = self.matriz_afin.dot(np.array([px, py, 1.0]))
 
         def v(k):

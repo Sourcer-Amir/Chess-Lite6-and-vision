@@ -17,7 +17,8 @@ P3_IMG, P3_ROB = [800.0, 800.0], [341.0, 141.3, 65.0, 175.1, -54.7, 4.7]    # ab
 DZ_POR_PIEZA = {"p": 0.0, "n": 0.0, "b": 0.0, "r": 0.0, "q": 0.0, "k": 0.0}
 
 # Lugares fuera del tablero: poses [x, y, z, roll, pitch, yaw] en mm y grados. MEDIR en Studio.
-CEMENTERIO_POSES = []          # un hueco por pieza capturada, en orden de uso
+# Todas las capturas se sueltan en el mismo lugar, desde arriba (luego va una caja ahi)
+CEMENTERIO_POSES = [[200.4, 252.1, 186.5, 180.0, 0.0, -0.7]]        # un hueco por pieza capturada, en orden de uso
 BANCO_POSES = {                # piezas de reserva para promocion, por simbolo
     "Q": [], "R": [], "B": [], "N": [],
     "q": [], "r": [], "b": [], "n": [],
@@ -33,7 +34,7 @@ SUAVIZADO_EN_VIVO = 0.3
 
 # ------------------------------------------------------------------ tablero
 LADO = 800                # lado del plano rectificado en px
-LADO_MARCO_MM = 240.0     # lado del cuadro INTERNO del marco verde, en mm
+LADO_MARCO_MM = 234.8     # lado del cuadro INTERNO del marco verde, en mm
 ALTURA_CARA_MM = 5.0      # empieza con la base, no con la punta  orignal: altura de la cara superior de las piezas, en mm
 
 # Rango HSV del marco verde (lo usa vision.obtener_homografia_por_color). Ajustar segun la luz:
