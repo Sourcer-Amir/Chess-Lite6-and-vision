@@ -108,7 +108,9 @@ def nombre_color(rgb_median):
 
 # Umbrales del clasificador de formas (se pueden sobrescribir en config.UMBRALES_FORMA)
 UMBRALES = {
-    "solidez_cruz": 0.85,      # solidez menor -> cruz (unica forma con entrantes)
+    "entrantes_cruz": 3,       # 3 o mas entrantes profundos -> cruz (la unica forma con entrantes)
+    "profundidad_entrante": 0.06,  # un entrante cuenta si es mas profundo que esta fraccion del lado
+    "solidez_cruz": 0.85,      # respaldo: solidez menor -> cruz
     "relleno_triangulo": 0.62, # relleno menor -> triangulo
     "relleno_cuadrado": 0.88,  # relleno mayor o igual -> cuadrado
     "vertices_circulo": 7,     # entre circulo y pentagono: >= 7 vertices -> circulo, si no pentagono
@@ -133,24 +135,39 @@ def rasgos_forma(cnt):
                                                   el contorno no se modifica.
     circ       = 4*pi*area / perimetro^2         (circulo ~0.9)
     vertices   = lados del poligono aproximado   (triangulo 3, cuadrado 4, pentagono 5, circulo 8, cruz 12)
+    entrantes  = huecos profundos del contorno respecto a su envolvente (cruz 4, las demas 0).
+                 Funciona aunque la cruz tenga brazos anchos (ahi la solidez sube a ~0.9 y no sirve).
     """
     area = cv2.contourArea(cnt)
     per = cv2.arcLength(cnt, True)
     w, h = cv2.minAreaRect(cnt)[1]
     hull = cv2.contourArea(cv2.convexHull(cnt))
+    entrantes = 0
+    try:
+        d = cv2.convexityDefects(cnt, cv2.convexHull(cnt, returnPoints=False))
+        if d is not None:
+            prof = np.asarray(d).reshape(-1, 4)[:, 3] / 256.0
+            entrantes = int((prof > UMBRALES["profundidad_entrante"] * max(w, h)).sum())
+    except cv2.error:
+        pass
     return {
         "area": area,
         "relleno": area / (w * h) if w * h > 0 else 0.0,
         "solidez": area / hull if hull > 0 else 0.0,
         "circ": 4 * np.pi * area / per ** 2 if per > 0 else 0.0,
         "vertices": len(cv2.approxPolyDP(cnt, UMBRALES["eps_vertices"] * per, True)) if per > 0 else 0,
+        "entrantes": entrantes,
     }
 
 
 def clasificar_forma(r):
-    """Arbol de decision (estrategia A). Devuelve 'cruz', 'triangulo', 'cuadrado', 'circulo' o 'pentagono'."""
+    """Arbol de decision (estrategia A). Devuelve 'cruz', 'triangulo', 'cuadrado', 'circulo' o 'pentagono'.
+    1. 3+ entrantes profundos (o solidez baja)  -> cruz
+    2. relleno bajo                             -> triangulo
+    3. relleno alto                             -> cuadrado
+    4. circulo vs pentagono por vertices        -> circulo (>= 7) o pentagono"""
     u = UMBRALES
-    if r["solidez"] < u["solidez_cruz"]:
+    if r["entrantes"] >= u["entrantes_cruz"] or r["solidez"] < u["solidez_cruz"]:
         return "cruz"
     if r["relleno"] < u["relleno_triangulo"]:
         return "triangulo"

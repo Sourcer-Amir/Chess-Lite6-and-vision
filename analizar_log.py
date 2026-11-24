@@ -212,7 +212,8 @@ def reporte(sesiones, carpeta="logs"):
         txt_s = (f" | solidez mediana {so[len(so)//2]:.2f} (5%: {so[len(so)//20]:.2f}, 95%: {so[len(so)*19//20]:.2f})"
                  if so else "")
         ve = Counter(int(d["vertices"]) for p in pres if p["identidad"] == ident for d in p["dets"])
-        w(f"  {ident}: vertices {dict(sorted(ve.items()))} | circ media {sum(cs)/len(cs):.2f} "
+        en = Counter(d.get("entrantes") or "-" for p in pres if p["identidad"] == ident for d in p["dets"])
+        w(f"  {ident}: entrantes {dict(en)} | vertices {dict(sorted(ve.items()))} | circ media {sum(cs)/len(cs):.2f} "
           f"(min {min(cs):.2f}, max {max(cs):.2f}){txt_r}{txt_s}")
 
     texto = "\n".join(L)

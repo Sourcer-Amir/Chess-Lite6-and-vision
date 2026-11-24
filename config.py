@@ -28,7 +28,7 @@ CAM_INDICE = "auto"
 CAM_MODO = "2K"               # "HD" = 2560x720, "2K" = 4416x1242, "FHD" = 3840x1080
 CAM_CONF = "SN20157429.conf"   # ruta al SN<serie>.conf de Stereolabs; None = sin quitar distorsion
 CAM_FRAMES_MEDIANA = 5         # frames que se promedian (mediana) en cada lectura
-ALTURA_GUIA_MM = 400.0         # altura de la camara que se esta probando; define el cuadro guia del panel 1
+ALTURA_GUIA_MM = 400.0 #en 350 mm reales funciono muy bien        # altura de la camara que se esta probando; define el cuadro guia del panel 1
 SUAVIZADO_EN_VIVO = 0.3
 
 # ------------------------------------------------------------------ tablero

@@ -20,7 +20,7 @@ from vision import contar_esquinas, rasgos_forma, clasificar_forma
 
 CAMPOS_FRAME = ["frame", "t", "marco_ok", "n_piezas", "altura_mm", "nadir_x", "nadir_y", "error"]
 CAMPOS_PIEZA = ["frame", "t", "casilla", "fila", "col", "simbolo", "cx", "cy", "dist_nadir_mm",
-                "area", "vertices", "agudas", "circ", "relleno", "solidez", "forma"]
+                "area", "vertices", "agudas", "circ", "relleno", "solidez", "entrantes", "forma"]
 
 
 def blobs_naranja(plano, area_min=200):
@@ -40,7 +40,8 @@ def blobs_naranja(plano, area_min=200):
         rf = rasgos_forma(c)
         salida.append({"cx": M["m10"] / M["m00"], "cy": M["m01"] / M["m00"], "area": a,
                        "vertices": rf["vertices"], "agudas": agudas, "circ": rf["circ"],
-                       "relleno": rf["relleno"], "solidez": rf["solidez"], "forma": clasificar_forma(rf)})
+                       "relleno": rf["relleno"], "solidez": rf["solidez"], "entrantes": rf["entrantes"],
+                       "forma": clasificar_forma(rf)})
     return salida
 
 
@@ -80,7 +81,7 @@ class Registro:
                 "dist_nadir_mm": round(dist, 1) if dist != "" else "",
                 "area": int(b["area"]), "vertices": b["vertices"], "agudas": b["agudas"],
                 "circ": round(b["circ"], 3), "relleno": round(b["relleno"], 3),
-                "solidez": round(b["solidez"], 3), "forma": b["forma"]})
+                "solidez": round(b["solidez"], 3), "entrantes": b["entrantes"], "forma": b["forma"]})
 
         self.wf.writerow({
             "frame": self.n, "t": t, "marco_ok": int(marco_ok), "n_piezas": len(piezas),
