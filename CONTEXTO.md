@@ -90,9 +90,10 @@ Con luz de tarde el anillo verde se corta y el marco se pierde (en una sesión s
 | `main.py` | entregado | Ventanas **"Monitor"** (2x2: en vivo con guía fija, máscara verde, rectificado, piezas) y **"Tablero 3D"**. Análisis en vivo arranca solo. Teclas: **i** iniciar, **ENTER** tu turno, **ESPACIO** pausar análisis/registro, **q** salir. Fin de partida: mensaje y cierre. |
 | `vista3d.py` | entregado | Tablero 3D con perspectiva, piezas Staunton (revolución + almenas/cruz/caballo), marco verde, sombras, flecha de última jugada, jaque en rojo, capturas por bando. Mouse: arrastrar gira, rueda zoom, doble clic reinicia. Antes de iniciar muestra votos ('?' gris). Solo redibuja si algo cambia (~90 ms por cuadro con 32 piezas). |
 | `registro.py` | entregado | Con el análisis activo guarda `logs/frames_<sesion>.csv` y `logs/piezas_<sesion>.csv` (casilla, símbolo, posición, distancia al nadir, área, vértices, agudas, circularidad, **relleno**). Lo llama `main.py`. |
-| `analizar_log.py` | entregado | `python3 analizar_log.py [sesion]`: frames con marco, presencias por casilla (votación), tiempo hasta identificar, errores por pieza, matriz de confusión, error por distancia al nadir, mapa 8x8, rasgos por identidad (agudas, circ, relleno). |
+| `analizar_log.py` | entregado | `python3 analizar_log.py [sesion | todas]` (`todas` junta todas las sesiones de `logs/`): frames con marco, presencias por casilla (votación), tiempo hasta identificar, errores por pieza, matriz de confusión, error por distancia al nadir, mapa 8x8, rasgos por identidad (agudas, circ, relleno). |
 | `simulacion.py` | entregado | Piloto sin equipo: lógica real de `juego.py` + ventana 3D con cámara/robot/humano simulados. Por defecto partida completa (32 piezas); `--mini` (rey + 2 torres vs rey); `--rapido`. Usa Stockfish si está, si no un motor sencillo. Probado: termina en mate. |
-| `robot.py` | sin cambios | `ControladorLite6`: `conectar`, `configurar_calibracion_3puntos`, `pixel_a_pose` (+8 mm), `casillero_a_pixel`, `mover_pieza` (termina en home), `visitar_pose`, gripper |
+| `robot.py` | entregado | `ControladorLite6`: `conectar`, `configurar_calibracion_3puntos`, **`configurar_calibracion_9puntos(puntos)`** (malla 3x3), `pixel_a_pose` (+8 mm; usa la malla con interpolación bilineal por cuadrante si está cargada, si no la afín de 3 puntos), `casillero_a_pixel`, `mover_pieza` (termina en home), `visitar_pose`, gripper |
+| `calibrar9.py` | entregado, sin probar con el robot | `python3 calibrar9.py`: modo manual (`set_mode(2)`), guía los 9 **cruces de líneas** del tablero (px, py = 100/400/700), lee `get_position`, avisa si el gripper no está vertical, guarda `calibracion9.json` y revisa la escala (entre cruces de las orillas deben salir 180 mm). `--probar`: visita los 9 cruces y los centros de a1, h1, a8, h8, e4, d5 con el gripper vertical. `juego.py` carga `calibracion9.json` solo (opcional `config.CALIBRACION_9`). |
 | `motor.py`, `pruebas_sin_equipo.py` | estables | Stockfish; pruebas de lógica y geometría |
 | `zed_stream.py` | entregado | Stream mínimo 4416x1242 con log de FPS (15.1 estable) |
 | `servidor.py`, `ajedrez.m` | sin probar | Para MATLAB (al final). Tienen comando `turno`. |
@@ -119,9 +120,9 @@ P3_IMG=[800,800] P3_ROB=[341.0,141.3,65.0,175.1,-54.7,4.7]    abajo-der, el más
 
 ## 7. PLAN DEL LUNES (acordado)
 1. **Revisar/configurar el TCP del gripper en Studio** (Settings → TCP). Comprobar: rotar el gripper sin que se mueva la punta.
-2. **Opción A (acordada):** grabar **9 puntos** (4 esquinas, centro de cada lado, centro) con el gripper **vertical** y la punta exactamente en el punto físico que corresponde a su coordenada en píxeles; interpolar entre ellos en lugar de la afín de 3 puntos. (Código pendiente: Claude ofreció prepararlo.)
+2. **Opción A (código listo):** `python3 calibrar9.py` → grabar los 9 cruces con el gripper **vertical** y a la altura de agarre (la misma de P1-P3); revisar la escala que imprime; `python3 calibrar9.py --probar` para verificar. En simulación (brazo con error no lineal) el error máximo en las 64 casillas bajó de 2.8 mm (3 puntos) a 0.7 mm (9 puntos).
 3. **Tecla `r` = "repetir" con corrección (propuesta del usuario, pendiente de programar):** tras soltar y volver a home, el usuario presiona `r`; la visión mide dónde quedó realmente la pieza (plano rectificado, ~0.3 mm/px; no hace falta la nube de puntos), el robot vuelve por ella **a su posición real**, la suelta de nuevo corregida y guarda una **corrección por casilla** en archivo (`corrección += k·error`, k≈0.7: control proporcional iterativo; el usuario lo pensó como PD, la derivada no aporta en movimientos discretos). Con el tiempo el error baja a la repetibilidad (±0.5 mm).
-4. Aplicar los umbrales de relleno (sección 4) y probar con `registro.py`.
+4. **Visión (plan del usuario):** `rm logs/*`, jugar ~4 partidas, `python3 analizar_log.py todas`, y ajustar en `vision.py` los umbrales de **relleno** (no área) para cuadrado, círculo y pentágono con la sección "RASGOS POR IDENTIDAD". Las piezas nuevas se ajustan **después** de estas 3. En paralelo, el usuario imprime las piezas nuevas.
 5. Instalar Stockfish y jugar una partida real con las piezas actuales (K cuadrado, k pentágono, R círculos).
 
 ## 8. Lógica de ajedrez (implementado)
@@ -131,7 +132,7 @@ P3_IMG=[800,800] P3_ROB=[341.0,141.3,65.0,175.1,-54.7,4.7]    abajo-der, el más
 - MATLAB: no corre en la Pi (ARM); arquitectura MATLAB en PC → TCP → `servidor.py` en la Pi (al final).
 
 ## 9. Pendientes
-1. Lunes: TCP, 9 puntos (opción A), tecla `r` con corrección por casilla (sección 7).
+1. Lunes: TCP, 9 puntos (código listo), umbrales de relleno con 4 partidas; tecla `r` con corrección por casilla (código pendiente).
 2. Confirmar el diseño de piezas (4 formas × 3 colores) y adaptar `vision.py` a colores.
 3. Poses de cementerio y banco de promoción; `DZ_POR_PIEZA`.
 4. Guardar los controles de la cámara (60 Hz, saturación, ganancia) en config y aplicarlos al abrir.

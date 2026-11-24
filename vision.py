@@ -5,14 +5,17 @@ Modulo de vision por computadora para deteccion de formas y piezas sobre tablero
 import cv2
 import numpy as np
 
+import config
+
 
 def obtener_homografia_por_color(img_bgr, lado=800):
     """
     Calcula la matriz de homografia para rectificar la perspectiva del tablero.
     """
     hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
-    lower_green = np.array([35, 50, 50])
-    upper_green = np.array([85, 255, 255])
+    # Rango HSV del marco verde: se ajusta en config.py (VERDE_BAJO / VERDE_ALTO) segun la luz.
+    lower_green = np.array(getattr(config, "VERDE_BAJO", [35, 50, 50]))
+    upper_green = np.array(getattr(config, "VERDE_ALTO", [85, 255, 255]))
     mask = cv2.inRange(hsv, lower_green, upper_green)
 
     kernel = np.ones((7, 7), np.uint8)
@@ -103,6 +106,59 @@ def nombre_color(rgb_median):
         return 'rosa'
 
 
+# Umbrales del clasificador de formas (se pueden sobrescribir en config.UMBRALES_FORMA)
+UMBRALES = {
+    "solidez_cruz": 0.85,      # solidez menor -> cruz (unica forma con entrantes)
+    "relleno_triangulo": 0.62, # relleno menor -> triangulo
+    "relleno_cuadrado": 0.88,  # relleno mayor o igual -> cuadrado
+    "vertices_circulo": 7,     # entre circulo y pentagono: >= 7 vertices -> circulo, si no pentagono
+    "eps_vertices": 0.025,     # tolerancia de approxPolyDP (fraccion del perimetro)
+}
+UMBRALES.update(getattr(config, "UMBRALES_FORMA", {}))
+
+# Forma -> nombre de la pieza (ver NOMBRE_A_SIMBOLO en config.py)
+PIEZA_POR_FORMA = {
+    "triangulo": "Rey Blanco",
+    "circulo": "Torre Blanca",
+    "pentagono": "Alfil Blanco",
+    "cruz": "Rey Negro",
+    "cuadrado": "Torre Negra",
+}
+
+
+def rasgos_forma(cnt):
+    """Medidas de forma de un contorno, invariantes a rotacion y escala.
+    relleno    = area / rectangulo minimo        (cuadrado ~0.95, circulo ~0.8, triangulo ~0.5)
+    solidez    = area / envolvente convexa       (cruz ~0.75; las demas ~1). Solo se usa como numero:
+                                                  el contorno no se modifica.
+    circ       = 4*pi*area / perimetro^2         (circulo ~0.9)
+    vertices   = lados del poligono aproximado   (triangulo 3, cuadrado 4, pentagono 5, circulo 8, cruz 12)
+    """
+    area = cv2.contourArea(cnt)
+    per = cv2.arcLength(cnt, True)
+    w, h = cv2.minAreaRect(cnt)[1]
+    hull = cv2.contourArea(cv2.convexHull(cnt))
+    return {
+        "area": area,
+        "relleno": area / (w * h) if w * h > 0 else 0.0,
+        "solidez": area / hull if hull > 0 else 0.0,
+        "circ": 4 * np.pi * area / per ** 2 if per > 0 else 0.0,
+        "vertices": len(cv2.approxPolyDP(cnt, UMBRALES["eps_vertices"] * per, True)) if per > 0 else 0,
+    }
+
+
+def clasificar_forma(r):
+    """Arbol de decision (estrategia A). Devuelve 'cruz', 'triangulo', 'cuadrado', 'circulo' o 'pentagono'."""
+    u = UMBRALES
+    if r["solidez"] < u["solidez_cruz"]:
+        return "cruz"
+    if r["relleno"] < u["relleno_triangulo"]:
+        return "triangulo"
+    if r["relleno"] >= u["relleno_cuadrado"]:
+        return "cuadrado"
+    return "circulo" if r["vertices"] >= u["vertices_circulo"] else "pentagono"
+
+
 def douglas_peucker(P, tol):
     """
     Simplificacion recursiva de contornos Ramer Douglas Peucker.
@@ -182,8 +238,8 @@ def contar_esquinas(P):
 
 def analizar_formas_tablero(plano_rectificado):
     """
-    Segmenta las figuras naranjas, rellena huecos, mide su relleno y circularidad
-    y clasifica cada una en una matriz de 8x8 (ver bloque de clasificacion).
+    Segmenta las figuras naranjas, rellena huecos, mide su forma (rasgos_forma)
+    y clasifica cada una (clasificar_forma) en una matriz de 8x8.
     """
     h, w = plano_rectificado.shape[:2]
     ch, cw = h // 8, w // 8
@@ -237,22 +293,8 @@ def analizar_formas_tablero(plano_rectificado):
         _, n_agudas = contar_esquinas(P)
         circ = 4.0 * np.pi * area / (perimetro ** 2)
 
-        # Clasificacion por RELLENO = area / rectangulo minimo que contiene la figura.
-        # No depende de contar esquinas (inestable con esquinas redondeadas o paralaje).
-        # Ver NOMBRE_A_SIMBOLO en config.py:
-        #   cuadrado  -> relleno ~0.95-1.00                     -> Rey Blanco   ('K')
-        #   circulo   -> relleno ~0.78 y circularidad alta      -> Torre Blanca ('R')
-        #   pentagono -> relleno ~0.69-0.72                     -> Rey Negro    ('k')
-        # n_agudas ya no decide; se deja calculado por si se quiere comparar.
-        w_r, h_r = cv2.minAreaRect(cnt)[1]
-        relleno = area / (w_r * h_r) if w_r * h_r > 0 else 0
-        pieza = 'Desconocido'
-        if relleno >= 0.88:
-            pieza = 'Rey Blanco'
-        elif relleno >= 0.75 and circ >= 0.84:
-            pieza = 'Torre Blanca'
-        elif relleno < 0.75:
-            pieza = 'Rey Negro'
+        # Clasificacion por forma (ver clasificar_forma y PIEZA_POR_FORMA arriba)
+        pieza = PIEZA_POR_FORMA.get(clasificar_forma(rasgos_forma(cnt)), 'Desconocido')
 
         M = cv2.moments(cnt)
         if M["m00"] != 0:
@@ -332,7 +374,7 @@ def dibujar_tablero(plano, matriz):
     for r in range(8):
         for c in range(8):
             val = matriz[r, c]
-            if val in ('Rey Blanco', 'Rey Negro', 'Torre Blanca') or val == 1:
+            if val in PIEZA_POR_FORMA.values() or val == 1:
                 cx = c * cw + cw // 2
                 cy = r * ch + ch // 2
                 cv2.circle(vis, (cx, cy), 12, (0, 75, 150), -1)

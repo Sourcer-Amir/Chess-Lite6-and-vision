@@ -16,11 +16,11 @@ import numpy as np
 
 import config
 from estado_tablero import celda_a_casilla
-from vision import contar_esquinas
+from vision import contar_esquinas, rasgos_forma, clasificar_forma
 
 CAMPOS_FRAME = ["frame", "t", "marco_ok", "n_piezas", "altura_mm", "nadir_x", "nadir_y", "error"]
 CAMPOS_PIEZA = ["frame", "t", "casilla", "fila", "col", "simbolo", "cx", "cy", "dist_nadir_mm",
-                "area", "vertices", "agudas", "circ", "relleno"]
+                "area", "vertices", "agudas", "circ", "relleno", "solidez", "forma"]
 
 
 def blobs_naranja(plano, area_min=200):
@@ -37,10 +37,10 @@ def blobs_naranja(plano, area_min=200):
         M = cv2.moments(c)
         P = np.squeeze(c)
         n, agudas = contar_esquinas(P) if P.ndim == 2 and len(P) >= 3 else (0, 0)
-        w, h = cv2.minAreaRect(c)[1]
+        rf = rasgos_forma(c)
         salida.append({"cx": M["m10"] / M["m00"], "cy": M["m01"] / M["m00"], "area": a,
-                       "vertices": n, "agudas": agudas, "circ": 4 * np.pi * a / p ** 2,
-                       "relleno": a / (w * h) if w * h else 0})
+                       "vertices": rf["vertices"], "agudas": agudas, "circ": rf["circ"],
+                       "relleno": rf["relleno"], "solidez": rf["solidez"], "forma": clasificar_forma(rf)})
     return salida
 
 
@@ -79,7 +79,8 @@ class Registro:
                 "simbolo": obs.get(sq, "vacio"), "cx": round(b["cx"], 1), "cy": round(b["cy"], 1),
                 "dist_nadir_mm": round(dist, 1) if dist != "" else "",
                 "area": int(b["area"]), "vertices": b["vertices"], "agudas": b["agudas"],
-                "circ": round(b["circ"], 3), "relleno": round(b["relleno"], 3)})
+                "circ": round(b["circ"], 3), "relleno": round(b["relleno"], 3),
+                "solidez": round(b["solidez"], 3), "forma": b["forma"]})
 
         self.wf.writerow({
             "frame": self.n, "t": t, "marco_ok": int(marco_ok), "n_piezas": len(piezas),

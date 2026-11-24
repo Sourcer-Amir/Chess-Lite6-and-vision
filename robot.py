@@ -1,7 +1,9 @@
 """
 Controlador cartesiano para manipulador Lite6.
-- Transformacion afin 2D (pixel del plano rectificado -> X, Y del robot)
-- Z, roll, pitch y yaw interpolados con un plano a partir de 3 poses medidas
+- Calibracion pixel del plano rectificado (800x800) -> pose del robot, de dos formas:
+  * 3 puntos: transformacion afin para X, Y y un plano para Z, roll, pitch, yaw.
+  * 9 puntos (malla 3x3, preferida): interpolacion bilineal por cuadrante; corrige errores
+    del brazo que cambian segun la zona del tablero. Se graba con calibrar9.py.
 - Manejo de errores por paso
 Todas las poses de entrada: [x, y, z, roll, pitch, yaw] con mm y GRADOS (como en UFactory Studio).
 """
@@ -23,6 +25,7 @@ class ControladorLite6:
         self.arm = None
         self.matriz_afin = None
         self.coef = None
+        self.malla = None          # calibracion de 9 puntos: (xs, ys, poses 3x3x6)
         self.calibrado = False
         # Postura de descanso (grados). Verifica en Studio que sean grados y no radianes.
         self.angulos_home = [0.0, 0.4, -0.3, 2.5, 0.0, -1.1]
@@ -68,8 +71,43 @@ class ControladorLite6:
                      for nombre, i in (("z", 2), ("roll", 3), ("pitch", 4), ("yaw", 5))}
         self.calibrado = True
 
+    def configurar_calibracion_9puntos(self, puntos):
+        """
+        puntos: lista de 9 dicts {"px", "py", "pose": [x, y, z, roll, pitch, yaw]} (mm y grados)
+        sobre una malla 3x3 (3 valores distintos de px y 3 de py). Ver calibrar9.py.
+        """
+        xs = sorted({float(p["px"]) for p in puntos})
+        ys = sorted({float(p["py"]) for p in puntos})
+        if len(xs) != 3 or len(ys) != 3 or len(puntos) != 9:
+            raise ValueError("La calibracion de 9 puntos necesita una malla 3x3")
+        poses = np.zeros((3, 3, 6))
+        for p in puntos:
+            pose = np.array(p["pose"], float)
+            pose[3] %= 360.0                       # roll continuo alrededor de +-180
+            poses[ys.index(float(p["py"])), xs.index(float(p["px"]))] = pose
+        self.malla = (np.array(xs), np.array(ys), poses)
+        self.calibrado = True
+
+    def _pose_malla(self, px, py):
+        """Interpolacion bilineal en el cuadrante de la malla 3x3 que contiene (px, py).
+        Fuera de la malla (p. ej. casillas de la orilla) extrapola con el cuadrante mas cercano."""
+        xs, ys, poses = self.malla
+        i = 0 if px < xs[1] else 1
+        j = 0 if py < ys[1] else 1
+        tx = (px - xs[i]) / (xs[i + 1] - xs[i])
+        ty = (py - ys[j]) / (ys[j + 1] - ys[j])
+        p = ((1 - tx) * (1 - ty) * poses[j, i] + tx * (1 - ty) * poses[j, i + 1]
+             + (1 - tx) * ty * poses[j + 1, i] + tx * ty * poses[j + 1, i + 1])
+        return [float(v) for v in p]
+
     def pixel_a_pose(self, px, py):
-        """Devuelve [x, y, z, roll, pitch, yaw] (mm y grados) para un pixel del plano."""
+        """Devuelve [x, y, z, roll, pitch, yaw] (mm y grados) para un pixel del plano.
+        Usa la malla de 9 puntos si esta cargada; si no, la calibracion de 3 puntos."""
+        if self.malla is not None:
+            x, y, z, roll, pitch, yaw = self._pose_malla(px, py)
+            if roll > 180.0:
+                roll -= 360.0
+            return [x, y, z + 8.0, roll, pitch, yaw]
         x, y = self.matriz_afin.dot(np.array([px, py, 1.0]))
 
         def v(k):

@@ -3,6 +3,9 @@ Orquestador: une camara, vision, logica de ajedrez, motor y robot.
 Todas las funciones publicas devuelven dict con tipos simples (para JSON y MATLAB).
 """
 
+import json
+import os
+
 import chess
 import cv2
 import numpy as np
@@ -64,8 +67,15 @@ class Juego:
             from robot import ControladorLite6
             self.robot = ControladorLite6(ip=config.ROBOT_IP)
             self.robot.conectar()
-            self.robot.configurar_calibracion_3puntos(config.P1_IMG, config.P1_ROB, config.P2_IMG,
-                                                      config.P2_ROB, config.P3_IMG, config.P3_ROB)
+            ruta9 = getattr(config, "CALIBRACION_9", "calibracion9.json")
+            if ruta9 and os.path.exists(ruta9):
+                with open(ruta9) as f:
+                    self.robot.configurar_calibracion_9puntos(json.load(f)["puntos"])
+                print(f"Robot: calibracion de 9 puntos ({ruta9})")
+            else:
+                self.robot.configurar_calibracion_3puntos(config.P1_IMG, config.P1_ROB, config.P2_IMG,
+                                                          config.P2_ROB, config.P3_IMG, config.P3_ROB)
+                print("Robot: calibracion de 3 puntos (config.py); para 9 puntos corre calibrar9.py")
         self.motor = None
         if con_motor:
             from motor import Motor

@@ -2,6 +2,7 @@
 Analiza los CSV de registro.py. Uso:
   python3 analizar_log.py                 -> la sesion mas reciente en logs/
   python3 analizar_log.py 20261120_170000 -> una sesion concreta
+  python3 analizar_log.py todas           -> junta TODAS las sesiones de logs/ en un solo reporte
 Identidad "verdadera" de cada pieza, sin etiquetarla a mano (votacion):
   - Se sigue cada casilla en el tiempo. Una presencia termina cuando la casilla queda vacia
     HUECO frames seguidos con el marco visible (la pieza se movio o fue capturada).
@@ -93,9 +94,23 @@ def pct(a, b):
     return f"{100 * a / b:5.1f}%" if b else "   - "
 
 
-def reporte(sesion, carpeta="logs"):
-    frames = leer(os.path.join(carpeta, f"frames_{sesion}.csv"))
-    piezas = leer(os.path.join(carpeta, f"piezas_{sesion}.csv"))
+def todas_las_sesiones(carpeta="logs"):
+    return [os.path.basename(r)[7:-4] for r in sorted(glob.glob(os.path.join(carpeta, "piezas_*.csv")))]
+
+
+def reporte(sesiones, carpeta="logs"):
+    """sesiones: un nombre o una lista. Con varias, las presencias se calculan por sesion y se juntan."""
+    if isinstance(sesiones, str):
+        sesiones = [sesiones]
+    frames, pres, dt = [], [], []
+    for ses in sesiones:
+        f_ses = leer(os.path.join(carpeta, f"frames_{ses}.csv"))
+        p_ses = leer(os.path.join(carpeta, f"piezas_{ses}.csv"))
+        frames += f_ses
+        pres += presencias(f_ses, p_ses)
+        ts = [float(f["t"]) for f in f_ses]
+        dt += [b - a for a, b in zip(ts, ts[1:]) if b > a]
+    sesion = sesiones[0] if len(sesiones) == 1 else f"{len(sesiones)} sesiones ({sesiones[0]} a {sesiones[-1]})"
     L = []
     w = L.append
 
@@ -105,8 +120,7 @@ def reporte(sesion, carpeta="logs"):
     w(f"SESION {sesion}")
     w(f"Frames analizados: {n} | con marco: {con_marco} ({pct(con_marco, n)}) | "
       f"con marco Y piezas: {con_piezas} ({pct(con_piezas, n)})")
-    ts = [float(f["t"]) for f in frames]
-    dt = sorted(b - a for a, b in zip(ts, ts[1:]) if b > a)
+    dt = sorted(dt)
     if dt:
         med, p90 = dt[len(dt) // 2], dt[int(len(dt) * 0.9)]
         w(f"Tiempo por frame (captura + analisis + pantalla): mediana {med*1000:.0f} ms "
@@ -116,7 +130,6 @@ def reporte(sesion, carpeta="logs"):
         w(f"Altura de camara: media {sum(alturas)/len(alturas):.0f} mm, "
           f"min {min(alturas):.0f}, max {max(alturas):.0f}")
 
-    pres = presencias(frames, piezas)
     w(f"\nPresencias de piezas (casilla ocupada >= {MIN_FRAMES} frames): {len(pres)}")
     for p in pres:
         tot = sum(p["votos"].values())
@@ -184,7 +197,7 @@ def reporte(sesion, carpeta="logs"):
         w(f"  f{f}  " + "".join(fila))
 
     # Rasgos por identidad (para ajustar el clasificador)
-    w("\nRASGOS POR IDENTIDAD (esquinas agudas contadas y circularidad)")
+    w("\nRASGOS POR IDENTIDAD (vertices, circularidad, relleno y solidez: con esto se ajustan los umbrales)")
     for ident in sorted(por_id):
         if ident == "?":
             continue
@@ -194,14 +207,23 @@ def reporte(sesion, carpeta="logs"):
                     if d.get("relleno"))
         txt_r = (f" | relleno mediana {rl[len(rl)//2]:.2f} (5%: {rl[len(rl)//20]:.2f}, 95%: {rl[len(rl)*19//20]:.2f})"
                  if rl else "")
-        w(f"  {ident}: agudas {dict(sorted(ag.items()))} | circ media {sum(cs)/len(cs):.2f} "
-          f"(min {min(cs):.2f}, max {max(cs):.2f}){txt_r}")
+        so = sorted(float(d["solidez"]) for p in pres if p["identidad"] == ident for d in p["dets"]
+                    if d.get("solidez"))
+        txt_s = (f" | solidez mediana {so[len(so)//2]:.2f} (5%: {so[len(so)//20]:.2f}, 95%: {so[len(so)*19//20]:.2f})"
+                 if so else "")
+        ve = Counter(int(d["vertices"]) for p in pres if p["identidad"] == ident for d in p["dets"])
+        w(f"  {ident}: vertices {dict(sorted(ve.items()))} | circ media {sum(cs)/len(cs):.2f} "
+          f"(min {min(cs):.2f}, max {max(cs):.2f}){txt_r}{txt_s}")
 
     texto = "\n".join(L)
     print(texto)
-    with open(os.path.join(carpeta, f"reporte_{sesion}.txt"), "w") as f:
+    nombre = sesiones[0] if len(sesiones) == 1 else "todas"
+    with open(os.path.join(carpeta, f"reporte_{nombre}.txt"), "w") as f:
         f.write(texto + "\n")
 
 
 if __name__ == "__main__":
-    reporte(sys.argv[1] if len(sys.argv) > 1 else sesion_reciente())
+    if len(sys.argv) > 1 and sys.argv[1] == "todas":
+        reporte(todas_las_sesiones())
+    else:
+        reporte(sys.argv[1] if len(sys.argv) > 1 else sesion_reciente())
