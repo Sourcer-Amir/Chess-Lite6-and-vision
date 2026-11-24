@@ -81,6 +81,9 @@ class Juego:
             from robot import ControladorLite6
             self.robot = ControladorLite6(ip=config.ROBOT_IP)
             self.robot.log = self.log
+            if hasattr(config, "ANGULOS_HOME"):
+                self.robot.angulos_home = [float(a) for a in config.ANGULOS_HOME]
+            self.log(f"Robot: home = {self.robot.angulos_home} grados (J1..J6)")
             self.robot.conectar()
             ruta9 = getattr(config, "CALIBRACION_9", "calibracion9.json")
             if ruta9 and os.path.exists(ruta9):
@@ -342,11 +345,16 @@ class Juego:
         return {"ok": True}
 
     def cerrar(self):
-        self.cam.cerrar()
-        if self.motor:
-            self.motor.cerrar()
-        if self.robot:
-            self.robot.desconectar()
+        """Cierra todo aunque alguna parte falle (p. ej. Stockfish ya muerto tras Ctrl+C)."""
+        for nombre, fn in (("camara", self.cam.cerrar),
+                           ("motor", self.motor.cerrar if self.motor else None),
+                           ("robot", self.robot.desconectar if self.robot else None)):
+            if fn is None:
+                continue
+            try:
+                fn()
+            except Exception as e:
+                print(f"Aviso al cerrar {nombre}: {e}")
 
     # ------------------------------------------------------------ internos
     def _requiere_partida(self):

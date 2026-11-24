@@ -209,6 +209,8 @@ def probar():
         puntos = json.load(f)["puntos"]
     revisar_escala(puntos)
     robot = ControladorLite6(ip=config.ROBOT_IP)
+    if hasattr(config, "ANGULOS_HOME"):
+        robot.angulos_home = [float(a) for a in config.ANGULOS_HOME]
     robot.conectar()
     robot.configurar_calibracion_9puntos(puntos, dz=getattr(config, "DZ_CALIBRACION_9", 0.0))
     yaw = config.P1_ROB[5]

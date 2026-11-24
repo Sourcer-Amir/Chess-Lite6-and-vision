@@ -17,6 +17,7 @@ from xarm.wrapper import XArmAPI
 ALTURA_SEGURA = 40.0        # mm sobre el punto
 VEL_LINEAL = 80.0           # mm/s en set_position
 VEL_ARTICULAR_DEG = 30.0    # deg/s en movimientos articulares
+TOL_HOME_DEG = 1.0          # diferencia maxima (grados) para considerar que el robot esta en home
 
 
 class ControladorLite6:
@@ -29,8 +30,9 @@ class ControladorLite6:
         self.ultimo_error = None   # dict con la etapa y los codigos del ultimo fallo de movimiento
         self.log = print           # juego.py lo reemplaza por su log con hora
         self.calibrado = False
-        # Postura de descanso (grados). Verifica en Studio que sean grados y no radianes.
-        self.angulos_home = [0.0, 0.4, -0.3, 2.5, 0.0, -1.1]
+        # Postura de descanso (grados, J1..J6). Se puede cambiar con config.ANGULOS_HOME.
+        # Antes estaba [0, 0.4, -0.3, 2.5, 0, -1.1] (el 2.5 en J4): esa postura choca consigo misma.
+        self.angulos_home = [0.0, 0.0, 2.5, 0.0, 0.0, 0.0]
 
     # ------------------------------------------------------------------ conexion
     def conectar(self, sensibilidad_colision=3):
@@ -164,26 +166,91 @@ class ControladorLite6:
             self._fallo(etapa, code, pose_rad)
         return code == 0
 
-    def _ir_articular(self, pose_rad, etapa="aproximacion articular"):
-        """Va a una pose cartesiana mediante IK y movimiento articular (evita trayectorias lineales imposibles)."""
-        code_ik, angulos = self.arm.get_inverse_kinematics(
-            pose_rad, input_is_radian=True, return_is_radian=True)
-        if code_ik != 0:
-            self._fallo(etapa, code_ik, pose_rad, "cinematica inversa: pose fuera de alcance o singular")
-            return False
-        code = self.arm.set_servo_angle(angle=angulos, speed=math.radians(VEL_ARTICULAR_DEG),
-                                        is_radian=True, wait=True)
-        if code != 0:
-            self._fallo(etapa, code, pose_rad, "movimiento articular")
-            return False
-        return True
-
-    def ir_a_posicion_home(self):
-        if not self.arm:
-            return
+    def _acercar(self, pose_rad, etapa):
+        """Acercamiento desde home: primero en LINEA RECTA (el home ya tiene el gripper hacia abajo, asi
+        la muneca no gira); si el controlador no puede, se usa la cinematica inversa como respaldo."""
+        code = self.arm.set_position(x=pose_rad[0], y=pose_rad[1], z=pose_rad[2],
+                                     roll=pose_rad[3], pitch=pose_rad[4], yaw=pose_rad[5],
+                                     speed=VEL_LINEAL, is_radian=True, wait=True)
+        if code == 0:
+            return True
+        self.log(f"   acercamiento lineal no posible en '{etapa}' (code {code}); se usa cinematica inversa")
         self._preparar()
-        self.arm.set_servo_angle(angle=self.angulos_home, speed=VEL_ARTICULAR_DEG,
-                                 is_radian=False, wait=True)
+        return self._ir_articular(pose_rad, etapa)
+
+    def _ir_articular(self, pose_rad, etapa="aproximacion articular"):
+        """Va a una pose cartesiana mediante IK y movimiento articular (evita trayectorias lineales imposibles).
+        Si la cinematica inversa no encuentra solucion (p. ej. cerca de una singularidad con el gripper
+        vertical), prueba la misma posicion con pequenos giros de orientacion; si nada funciona, intenta un
+        movimiento lineal (el controlador a veces si llega asi, como paso con d1)."""
+        variantes = [(0.0, 0.0), (1.0, 0.0), (-1.0, 0.0), (0.0, 3.0), (0.0, -3.0), (2.0, 5.0), (-2.0, -5.0)]
+        for dpitch, dyaw in variantes:
+            p = list(pose_rad)
+            p[4] += math.radians(dpitch)
+            p[5] += math.radians(dyaw)
+            code_ik, angulos = self.arm.get_inverse_kinematics(p, input_is_radian=True, return_is_radian=True)
+            if code_ik != 0:
+                continue
+            if (dpitch, dyaw) != (0.0, 0.0):
+                self.log(f"   IK sin solucion exacta en '{etapa}'; se usa pitch {dpitch:+.0f} y yaw {dyaw:+.0f} grados")
+            actual = self.angulos_actuales()
+            if actual is not None:
+                giros = [math.degrees(a) - b for a, b in zip(angulos[:6], actual)]
+                grande = max(abs(g) for g in giros)
+                self.log(f"   giro por articulacion en '{etapa}' (grados): "
+                         + ", ".join(f"J{i + 1} {g:+.0f}" for i, g in enumerate(giros))
+                         + ("   <-- GIRO GRANDE" if grande > 90 else ""))
+            code = self.arm.set_servo_angle(angle=angulos, speed=math.radians(VEL_ARTICULAR_DEG),
+                                            is_radian=True, wait=True)
+            if code != 0:
+                self._fallo(etapa, code, p, "movimiento articular")
+                return False
+            return True
+        self.log(f"   IK sin solucion en '{etapa}' ni con orientacion ajustada; se intenta movimiento lineal")
+        return self._mover(pose_rad, etapa + " (lineal)")
+
+    def angulos_actuales(self):
+        """Angulos reales de las 6 articulaciones en grados (None si no se pudieron leer)."""
+        code, ang = self.arm.get_servo_angle(is_radian=False)
+        if code != 0 or ang is None:
+            return None
+        return [float(a) for a in ang[:6]]
+
+    def en_home(self, tol=TOL_HOME_DEG):
+        ang = self.angulos_actuales()
+        if ang is None:
+            return False
+        return max(abs(a - b) for a, b in zip(ang, self.angulos_home)) <= tol
+
+    def ir_a_posicion_home(self, intentos=2):
+        """Va al home (angulos fijos) y COMPRUEBA que llego. Registra la diferencia en el log."""
+        if not self.arm:
+            return False
+        for k in range(intentos):
+            self._preparar()
+            code = self.arm.set_servo_angle(angle=self.angulos_home, speed=VEL_ARTICULAR_DEG,
+                                            is_radian=False, wait=True)
+            ang = self.angulos_actuales()
+            dif = None if ang is None else max(abs(a - b) for a, b in zip(ang, self.angulos_home))
+            if code == 0 and dif is not None and dif <= TOL_HOME_DEG:
+                self.log(f"Home: OK (diferencia maxima {dif:.2f} grados)")
+                return True
+            self.log(f"Home: NO llego (intento {k + 1}/{intentos}) | code {code} | error_code "
+                     f"{getattr(self.arm, 'error_code', None)} | diferencia maxima "
+                     f"{'?' if dif is None else f'{dif:.2f}'} grados | angulos {None if ang is None else [round(a, 1) for a in ang]}")
+        self.ultimo_error = {"etapa": "volver a home", "code": code,
+                             "error_code": getattr(self.arm, "error_code", None), "lleva_pieza": False}
+        return False
+
+    def _revisar_llegada(self, pose_rad, etapa):
+        """Compara la posicion pedida con la que reporta el robot y la registra (mm)."""
+        code, pos = self.arm.get_position(is_radian=True)
+        if code != 0 or pos is None:
+            return
+        d = [float(pos[i]) - float(pose_rad[i]) for i in range(3)]
+        err = math.sqrt(sum(v * v for v in d))
+        self.log(f"   llegada '{etapa}': error {err:.2f} mm (dx {d[0]:+.2f}, dy {d[1]:+.2f}, dz {d[2]:+.2f})"
+                 + ("   <-- REVISAR" if err > 1.0 else ""))
 
     def visitar_pose(self, pose_grados, espera=2.0):
         """Para pruebas: sube a pose segura, baja al punto, espera y vuelve a subir."""
@@ -210,6 +277,12 @@ class ControladorLite6:
         self.ultimo_error = None
         self._preparar()
 
+        # 0. Salir siempre desde home: asi el brazo llega con la misma postura con la que se calibro
+        if not self.en_home():
+            self.log("   el robot no estaba en home: va primero a home")
+            if not self.ir_a_posicion_home():
+                return False
+
         o = self._a_rad(pose_origen)
         d = self._a_rad(pose_destino)
         o_up, d_up = self._arriba(o), self._arriba(d)
@@ -221,12 +294,13 @@ class ControladorLite6:
 
         # 1. Abrir gripper y aproximacion articular sobre el origen
         self.abrir_gripper()
-        if not self._ir_articular(o_up, "ir arriba del origen"):
+        if not self._acercar(o_up, "ir arriba del origen"):
             return falla(False)
 
         # 2. Descenso al origen y agarre
         if not self._mover(o, "bajar al origen"):
             return falla(False)
+        self._revisar_llegada(o, "origen")
         self.cerrar_gripper()
 
         # 3. Elevacion y traslado (sin detener el gripper: se mantiene cerrado)
@@ -234,6 +308,7 @@ class ControladorLite6:
                             (d, "bajar al destino")):
             if not self._mover(paso, etapa):
                 return falla(True)
+        self._revisar_llegada(d, "destino")
 
         # 4. Soltar en destino y elevar
         self.abrir_gripper()
@@ -241,7 +316,7 @@ class ControladorLite6:
             return falla(False)
         self.detener_gripper()
 
-        # 5. Home
+        # 5. Home (comprobado; si no llega, el siguiente movimiento lo vuelve a intentar al inicio)
         self.ir_a_posicion_home()
         return True
 
